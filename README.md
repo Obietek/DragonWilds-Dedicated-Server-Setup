@@ -44,6 +44,32 @@ The build script also installs the required Python packages:
 
 The executable is built with `--noconsole`, so it launches as a normal Windows app without a terminal window.
 
+## Windows Security Warnings
+
+Because the executable may be unsigned, Windows can show warnings such as `Unknown publisher` or a Microsoft Defender SmartScreen prompt.
+
+If Windows blocks the app:
+
+1. Click `More info`.
+2. Click `Run anyway`.
+
+If Windows marks the downloaded file as blocked:
+
+1. Right-click `DragonwildsManager.exe`.
+2. Click `Properties`.
+3. On the `General` tab, check `Unblock` if it appears.
+4. Click `Apply`, then run the app again.
+
+If SmartScreen or Defender quarantines the file after download:
+
+1. Open `Windows Security`.
+2. Go to `Virus & threat protection`.
+3. Open `Protection history`.
+4. Find the blocked `DragonwildsManager.exe` event.
+5. Choose the option to allow or restore the file if you trust the build source.
+
+If you plan to redistribute the app broadly, signing the executable is strongly recommended to reduce these warnings.
+
 ## First-Time Setup
 
 On first launch, use the tabs in this order:
@@ -208,3 +234,9 @@ python build.py
 ```
 
 If no signing variables are set, the build still succeeds, but the executable will be left unsigned.
+
+## Support
+
+If this project helped you and you want to support future updates:
+
+https://buymeacoffee.com/obietek
