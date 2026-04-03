@@ -159,6 +159,25 @@ Build the executable:
 python build.py
 ```
 
+## GitHub Releases
+
+The repo includes a GitHub Actions workflow at `.github/workflows/release.yml`.
+
+It will:
+
+- build `dist\DragonwildsManager.exe` on Windows
+- upload the executable as a workflow artifact
+- attach the executable to a GitHub Release when you push a tag like `v1.0.0`
+
+To publish a release from GitHub:
+
+```powershell
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+You can also run the workflow manually from the GitHub Actions tab to generate a downloadable build artifact without creating a release.
+
 ## Release Signing
 
 `build.py` can automatically sign `dist\DragonwildsManager.exe` when signing credentials are provided through environment variables.
