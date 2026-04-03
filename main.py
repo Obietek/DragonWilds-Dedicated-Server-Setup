@@ -180,6 +180,11 @@ class StatusTab(tk.Frame):
                                  bg=P["panel"], fg=P["subtext"], anchor="w")
         self._pid_lbl.pack(anchor="w")
 
+        self._players_lbl = tk.Label(info, text="Players Online: 0",
+                                     font=("Segoe UI", 9),
+                                     bg=P["panel"], fg=P["subtext"], anchor="w")
+        self._players_lbl.pack(anchor="w")
+
         # ── Server path display ──
         tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24)
 
@@ -228,6 +233,7 @@ class StatusTab(tk.Frame):
             self._status_lbl.configure(text="Server Online", fg=P["online"])
             self._uptime_lbl.configure(text=f"Uptime: {mon.uptime_str}")
             self._pid_lbl.configure(text=f"PID: {mon.pid}")
+            self._players_lbl.configure(text=f"Players Online: {mon.player_count}")
             self._btn_start.configure(state="disabled", bg=P["btn_dim"])
             self._btn_stop.configure(state="normal",   bg="#6E2020")
             if mon.exe_path:
@@ -237,6 +243,7 @@ class StatusTab(tk.Frame):
             self._status_lbl.configure(text="Server Offline", fg=P["offline"])
             self._uptime_lbl.configure(text="Uptime: --")
             self._pid_lbl.configure(text="PID: --")
+            self._players_lbl.configure(text="Players Online: 0")
             self._btn_start.configure(state="normal",   bg=P["btn_bg"])
             self._btn_stop.configure(state="disabled",  bg=P["btn_dim"])
 
@@ -319,6 +326,58 @@ class SetupTab(tk.Frame):
                        self.app.delete_server_files,
                        bg="#6E2020", fg=P["text"], width=22
                        ).grid(row=2, column=0, padx=(0, 8), pady=4, sticky="w")
+
+        # World transfer helper
+        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 4))
+        _label(self, "Move Existing World", font=("Segoe UI", 10, "bold"),
+               bg=P["panel"], fg=P["accent"]).pack(anchor="w", **pad)
+
+        transfer = tk.Frame(self, bg=P["panel"])
+        transfer.pack(fill="x", padx=24, pady=(0, 4))
+
+        help_text = (
+            "1. Stop the dedicated server.\n"
+            "2. Back up every file from the dedicated SaveGames folder.\n"
+            "3. Empty the dedicated SaveGames folder.\n"
+            "4. Copy your local world .sav file into the dedicated SaveGames folder.\n"
+            "5. Start the server."
+        )
+        tk.Label(
+            transfer,
+            text=help_text,
+            justify="left",
+            font=("Segoe UI", 8),
+            bg=P["panel"],
+            fg=P["subtext"],
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+
+        _styled_button(
+            transfer,
+            "[L]  Open Local SaveGames",
+            self.app.open_local_savegames,
+            bg=P["panel2"],
+            fg=P["text"],
+            width=22,
+        ).grid(row=1, column=0, padx=(0, 8), pady=4, sticky="w")
+
+        _styled_button(
+            transfer,
+            "[D]  Open Dedicated SaveGames",
+            self.app.open_dedicated_savegames,
+            bg=P["panel2"],
+            fg=P["text"],
+            width=24,
+        ).grid(row=1, column=1, padx=(0, 8), pady=4, sticky="w")
+
+        _styled_button(
+            transfer,
+            "[B]  Back Up SaveGames",
+            self.app.backup_savegames,
+            bg=P["panel2"],
+            fg=P["text"],
+            width=22,
+        ).grid(row=2, column=0, padx=(0, 8), pady=4, sticky="w")
 
         # Progress bar
         style = ttk.Style()
@@ -669,6 +728,55 @@ class DragonwildsManager(tk.Tk):
             os.startfile(folder)
         else:
             messagebox.showinfo("Not Found", f"Folder not found:\n{folder}")
+
+    def open_local_savegames(self):
+        folder = installer.SAVEGAMES_DIR
+        folder.mkdir(parents=True, exist_ok=True)
+        os.startfile(str(folder))
+
+    def open_dedicated_savegames(self):
+        exe = self.tab_setup.get_exe_override() or self.prefs.get("server_exe", "")
+        if not exe or not Path(exe).exists():
+            install_dir = self.tab_setup.get_install_dir()
+            exe = installer.find_server_exe(install_dir) or ""
+
+        if not exe or not Path(exe).exists():
+            messagebox.showerror(
+                "Server Not Found",
+                "Configure or install the dedicated server first so the SaveGames folder can be located.",
+            )
+            return
+
+        for folder in installer.dedicated_savegames_paths_from_exe(exe):
+            folder.mkdir(parents=True, exist_ok=True)
+            if folder.exists():
+                os.startfile(str(folder))
+                return
+
+        messagebox.showinfo("Not Found", "Could not determine the dedicated SaveGames folder.")
+
+    def backup_savegames(self):
+        destination = filedialog.askdirectory(
+            title="Choose backup folder",
+            initialdir=str(Path.home()),
+        )
+        if not destination:
+            return
+
+        exe = self.tab_setup.get_exe_override() or self.prefs.get("server_exe", "")
+        if (not exe or not Path(exe).exists()) and self.tab_setup.get_install_dir().exists():
+            exe = installer.find_server_exe(self.tab_setup.get_install_dir()) or ""
+
+        def _worker():
+            self.after(0, self.tab_setup.start_progress)
+            self.after(0, lambda: self.tab_setup.set_status("Backing up SaveGames...", P["warn"]))
+            ok = installer.backup_savegames(Path(destination), exe, self.log.append)
+            self.after(0, lambda: self.tab_setup.stop_progress(100 if ok else 0))
+            msg = "SaveGames backup complete." if ok else "Backup skipped or failed -- check the log."
+            color = P["success"] if ok else P["error"]
+            self.after(0, lambda: self.tab_setup.set_status(msg, color))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def run_full_setup(self):
         errs = self.tab_config.validate()

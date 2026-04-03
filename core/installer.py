@@ -9,6 +9,7 @@ import subprocess
 import textwrap
 import urllib.request
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 
@@ -172,6 +173,52 @@ def _dedicated_config_paths_from_exe(exe_path: str) -> list[Path]:
         base / "RSDragonwilds" / "Saved" / "Config" / "WindowsServer" / "DedicatedServer.ini",
         base / "Saved" / "Config" / "WindowsServer" / "DedicatedServer.ini",
     ]
+
+
+def dedicated_savegames_paths_from_exe(exe_path: str) -> list[Path]:
+    exe_path = str(exe_path).strip()
+    if not exe_path:
+        return []
+    p = Path(exe_path)
+    if not p.is_file():
+        return []
+    base = p.parent
+    return [
+        base / "RSDragonwilds" / "Saved" / "SaveGames",
+        base / "Saved" / "SaveGames",
+    ]
+
+
+def backup_savegames(destination_root: Path, exe_path: str, log) -> bool:
+    destination_root = Path(destination_root)
+    destination_root.mkdir(parents=True, exist_ok=True)
+
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_root = destination_root / f"DragonwildsBackup-{stamp}"
+    backup_root.mkdir(parents=True, exist_ok=True)
+
+    sources: list[tuple[str, Path]] = []
+    if SAVEGAMES_DIR.exists():
+        sources.append(("LocalSaveGames", SAVEGAMES_DIR))
+
+    for path in dedicated_savegames_paths_from_exe(exe_path):
+        if path.exists():
+            label = "DedicatedSaveGames"
+            if any(name == label for name, _ in sources):
+                label = f"{label}-{path.parent.parent.name}"
+            sources.append((label, path))
+
+    if not sources:
+        log("No SaveGames folders were found to back up.", "WARN")
+        return False
+
+    for label, src in sources:
+        dest = backup_root / label
+        shutil.copytree(src, dest, dirs_exist_ok=True)
+        log(f"Backed up {src} to {dest}", "OK")
+
+    log(f"Backup complete: {backup_root}", "OK")
+    return True
 
 
 def write_config(cfg: dict, log) -> None:
