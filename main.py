@@ -37,12 +37,17 @@ from core import installer, monitor, settings
 
 P = {
     "bg":        "#0E0C0A",
+    "bg2":       "#15110D",
     "panel":     "#181410",
     "panel2":    "#201A12",
+    "panel3":    "#2A2118",
+    "panel_hi":  "#34281C",
     "accent":    "#C49638",
     "accent2":   "#8C6A1E",
+    "accent_soft": "#E2C27A",
     "text":      "#E6DCC8",
     "subtext":   "#A08C6E",
+    "muted":     "#7F6A4F",
     "input_bg":  "#2A2018",
     "success":   "#50C864",
     "error":     "#DC503C",
@@ -50,10 +55,14 @@ P = {
     "btn_bg":    "#C49638",
     "btn_fg":    "#0E0C0A",
     "btn_dim":   "#5A4A20",
+    "btn_util":  "#3A2E20",
+    "btn_restart": "#6C5424",
+    "btn_stop":  "#6E2020",
+    "card_border": "#5B4528",
     "sep":       "#5A4020",
     "online":    "#50C864",
     "offline":   "#DC503C",
-    "log_bg":    "#06050403",
+    "log_bg":    "#090705",
     "tab_act":   "#C49638",
     "tab_inact": "#2A2018",
     "coffee":    "#FFCC00",
@@ -78,10 +87,11 @@ def _styled_button(parent, text, command, bg=None, fg=None, width=None, font=Non
     kw = dict(
         text=text, command=command,
         bg=bg or P["btn_bg"], fg=fg or P["btn_fg"],
-        activebackground=P["accent2"], activeforeground=P["text"],
+        activebackground=P["panel_hi"], activeforeground=P["text"],
         relief="flat", bd=0, cursor="hand2",
         padx=12, pady=6,
         font=font or ("Segoe UI", 9, "bold"),
+        highlightthickness=0,
     )
     if width:
         kw["width"] = width
@@ -125,7 +135,7 @@ class LogWidget(scrolledtext.ScrolledText):
     def __init__(self, parent, **kw):
         super().__init__(
             parent,
-            bg="#060504", fg=P["text"],
+            bg=P["log_bg"], fg=P["text"],
             font=("Consolas", 8),
             relief="flat", bd=0,
             state="disabled",
@@ -151,11 +161,39 @@ class LogWidget(scrolledtext.ScrolledText):
             self.see("end")
 
 
+class ScrollableTab(tk.Frame):
+    def __init__(self, parent, bg):
+        super().__init__(parent, bg=bg)
+        self._canvas = tk.Canvas(self, bg=bg, highlightthickness=0, bd=0)
+        self._scrollbar = tk.Scrollbar(self, orient="vertical", command=self._canvas.yview)
+        self.body = tk.Frame(self._canvas, bg=bg)
+        self._window = self._canvas.create_window((0, 0), window=self.body, anchor="nw")
+
+        self._canvas.configure(yscrollcommand=self._scrollbar.set)
+        self._canvas.pack(side="left", fill="both", expand=True)
+        self._scrollbar.pack(side="right", fill="y")
+
+        self.body.bind("<Configure>", self._sync_scrollregion)
+        self._canvas.bind("<Configure>", self._resize_body)
+
+        for widget in (self, self._canvas, self.body):
+            widget.bind("<MouseWheel>", self._on_mousewheel)
+
+    def _sync_scrollregion(self, _event=None):
+        self._canvas.configure(scrollregion=self._canvas.bbox("all"))
+
+    def _resize_body(self, event):
+        self._canvas.itemconfigure(self._window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        self._canvas.yview_scroll(int(-event.delta / 120), "units")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 #  STATUS TAB
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class StatusTab(tk.Frame):
+class StatusTab(ScrollableTab):
     def __init__(self, parent, app):
         super().__init__(parent, bg=P["panel"])
         self.app = app
@@ -163,56 +201,86 @@ class StatusTab(tk.Frame):
 
     def _build(self):
         # ── Big status indicator ──
-        top = tk.Frame(self, bg=P["panel"], pady=20)
-        top.pack(fill="x", padx=24)
+        top_wrap = tk.Frame(self.body, bg=P["panel"], pady=18)
+        top_wrap.pack(fill="x", padx=24)
+        top = tk.Frame(top_wrap, bg=P["panel3"], padx=18, pady=18,
+                       highlightbackground=P["card_border"], highlightthickness=1)
+        top.pack(fill="x")
 
         self._dot = tk.Label(top, text="●", font=("Segoe UI", 36),
-                             bg=P["panel"], fg=P["offline"])
-        self._dot.pack(side="left", padx=(0, 16))
+                             bg=P["panel3"], fg=P["offline"])
+        self._dot.pack(side="left", padx=(0, 18))
 
-        info = tk.Frame(top, bg=P["panel"])
+        info = tk.Frame(top, bg=P["panel3"])
         info.pack(side="left", fill="y")
 
         self._status_lbl = tk.Label(info, text="Server Offline",
-                                    font=("Georgia", 18, "bold"),
-                                    bg=P["panel"], fg=P["offline"], anchor="w")
+                                    font=("Georgia", 20, "bold"),
+                                    bg=P["panel3"], fg=P["offline"], anchor="w")
         self._status_lbl.pack(anchor="w")
 
+        self._status_chip = tk.Label(
+            info,
+            text="Offline",
+            font=("Segoe UI", 8, "bold"),
+            bg=P["panel_hi"],
+            fg=P["offline"],
+            padx=8,
+            pady=2,
+        )
+        self._status_chip.pack(anchor="w", pady=(4, 8))
+
         self._uptime_lbl = tk.Label(info, text="Uptime: --",
-                                    font=("Segoe UI", 9),
-                                    bg=P["panel"], fg=P["subtext"], anchor="w")
+                                     font=("Segoe UI", 9),
+                                     bg=P["panel3"], fg=P["subtext"], anchor="w")
         self._uptime_lbl.pack(anchor="w")
 
         self._pid_lbl = tk.Label(info, text="PID: --",
-                                 font=("Consolas", 8),
-                                 bg=P["panel"], fg=P["subtext"], anchor="w")
+                                  font=("Consolas", 8),
+                                  bg=P["panel3"], fg=P["subtext"], anchor="w")
         self._pid_lbl.pack(anchor="w")
 
         self._players_lbl = tk.Label(info, text="Players Online: 0",
-                                     font=("Segoe UI", 9),
-                                     bg=P["panel"], fg=P["subtext"], anchor="w")
+                                     font=("Segoe UI", 9, "bold"),
+                                     bg=P["panel3"], fg=P["accent_soft"], anchor="w")
         self._players_lbl.pack(anchor="w")
 
         self._player_names_lbl = tk.Label(
             info,
             text="Players: --",
             font=("Segoe UI", 8),
-            bg=P["panel"],
+            bg=P["panel3"],
             fg=P["subtext"],
             anchor="w",
             justify="left",
+            wraplength=520,
         )
         self._player_names_lbl.pack(anchor="w", pady=(2, 0))
 
-        # ── Server path display ──
-        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24)
+        stat_strip = tk.Frame(top, bg=P["panel3"])
+        stat_strip.pack(side="right", anchor="n", padx=(16, 0))
 
-        path_frame = tk.Frame(self, bg=P["panel"], pady=10)
+        self._quick_world = tk.Label(
+            stat_strip,
+            text="World Unset",
+            font=("Segoe UI", 10, "bold"),
+            bg=P["panel_hi"],
+            fg=P["accent_soft"],
+            padx=12,
+            pady=8,
+        )
+        self._quick_world.pack(anchor="e")
+
+        # ── Server path display ──
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24)
+
+        path_frame = tk.Frame(self.body, bg=P["panel"], pady=12)
         path_frame.pack(fill="x", padx=24)
 
-        _label(path_frame, "Server Executable:", fg=P["subtext"]).pack(anchor="w")
+        _label(path_frame, "Server Executable", fg=P["muted"],
+               font=("Segoe UI", 8, "bold")).pack(anchor="w")
         self._path_lbl = _label(path_frame, "Not configured",
-                                font=("Consolas", 8), fg=P["accent"])
+                                font=("Consolas", 8), fg=P["accent_soft"])
         self._path_lbl.pack(anchor="w")
 
         # ── World name display ──
@@ -221,48 +289,57 @@ class StatusTab(tk.Frame):
         self._world_lbl.pack(anchor="w", pady=(4, 0))
 
         # ── Action buttons ──
-        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24)
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24)
 
-        btn_row = tk.Frame(self, bg=P["panel"], pady=14)
+        btn_row = tk.Frame(self.body, bg=P["panel"], pady=14)
         btn_row.pack(fill="x", padx=24)
 
         self._btn_start = _styled_button(btn_row, "[>]  Start Server",
-                                         self.app.start_server, width=20)
+                                         self.app.start_server, width=20,
+                                         bg=P["btn_bg"], fg=P["btn_fg"])
         self._btn_start.pack(side="left", padx=(0, 8))
 
         self._btn_stop = _styled_button(btn_row, "[X]  Stop Server",
-                                        self.app.stop_server,
-                                        bg=P["btn_dim"], fg=P["text"], width=20)
+                                         self.app.stop_server,
+                                         bg=P["btn_stop"], fg=P["text"], width=20)
         self._btn_stop.pack(side="left", padx=(0, 8))
 
         self._btn_restart = _styled_button(btn_row, "[R]  Restart Server",
-                                           self.app.restart_server,
-                                           bg=P["panel2"], fg=P["text"], width=20)
+                                            self.app.restart_server,
+                                            bg=P["btn_restart"], fg=P["text"], width=20)
         self._btn_restart.pack(side="left", padx=(0, 8))
 
+        self._btn_update = _styled_button(btn_row, "[U]  Update Server",
+                                          self.app.update_server_from_status,
+                                          bg=P["btn_util"], fg=P["text"], width=20)
+        self._btn_update.pack(side="left", padx=(0, 8))
+
         _styled_button(btn_row, "[F]  Open Server Folder",
-                        self.app.open_folder, bg=P["panel2"], fg=P["text"], width=22
+                        self.app.open_folder, bg=P["btn_util"], fg=P["text"], width=22
                         ).pack(side="left")
 
         # ── Log ──
-        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(4, 0))
-        log_header = tk.Frame(self, bg=P["panel"])
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(4, 0))
+        log_shell = tk.Frame(self.body, bg=P["panel3"], highlightbackground=P["card_border"],
+                             highlightthickness=1)
+        log_shell.pack(fill="both", expand=True, padx=24, pady=(6, 10))
+        log_header = tk.Frame(log_shell, bg=P["panel_hi"])
         log_header.pack(fill="x", padx=24, pady=(6, 0))
-        _label(log_header, "Live Log", fg=P["subtext"], bg=P["panel"],
-               font=("Segoe UI", 8)).pack(side="left", padx=(2, 0))
+        _label(log_header, "Live Log", fg=P["accent_soft"], bg=P["panel_hi"],
+               font=("Segoe UI", 8, "bold")).pack(side="left", padx=(8, 0), pady=6)
         self._pause_log_btn = _styled_button(
             log_header,
             "Pause Log",
             self._toggle_log_pause,
-            bg=P["panel2"],
+            bg=P["btn_util"],
             fg=P["text"],
             width=12,
             font=("Segoe UI", 8, "bold"),
         )
-        self._pause_log_btn.pack(side="right")
+        self._pause_log_btn.pack(side="right", padx=8, pady=4)
         self.app.log.set_paused(False)
         self._pause_log_btn.configure(text="Pause Log")
-        self.app.log.pack(in_=self, fill="both", expand=True, padx=24, pady=(2, 10))
+        self.app.log.pack(in_=log_shell, fill="both", expand=True, padx=10, pady=(8, 10))
 
     def _toggle_log_pause(self):
         paused = not self.app.log.paused
@@ -274,6 +351,7 @@ class StatusTab(tk.Frame):
         if mon.is_online:
             self._dot.configure(fg=P["online"])
             self._status_lbl.configure(text="Server Online", fg=P["online"])
+            self._status_chip.configure(text="Online", fg=P["online"])
             self._uptime_lbl.configure(text=f"Uptime: {mon.uptime_str}")
             self._pid_lbl.configure(text=f"PID: {mon.pid}")
             self._players_lbl.configure(text=f"Players Online: {mon.player_count}")
@@ -283,13 +361,15 @@ class StatusTab(tk.Frame):
             else:
                 self._player_names_lbl.configure(text="Players: --")
             self._btn_start.configure(state="disabled", bg=P["btn_dim"])
-            self._btn_stop.configure(state="normal",   bg="#6E2020")
-            self._btn_restart.configure(state="normal", bg=P["panel2"])
+            self._btn_stop.configure(state="normal",   bg=P["btn_stop"])
+            self._btn_restart.configure(state="normal", bg=P["btn_restart"])
+            self._btn_update.configure(state="normal", bg=P["btn_util"])
             if mon.exe_path:
                 self._path_lbl.configure(text=mon.exe_path)
         else:
             self._dot.configure(fg=P["offline"])
             self._status_lbl.configure(text="Server Offline", fg=P["offline"])
+            self._status_chip.configure(text="Offline", fg=P["offline"])
             self._uptime_lbl.configure(text="Uptime: --")
             self._pid_lbl.configure(text="PID: --")
             self._players_lbl.configure(text="Players Online: 0")
@@ -297,6 +377,7 @@ class StatusTab(tk.Frame):
             self._btn_start.configure(state="normal",   bg=P["btn_bg"])
             self._btn_stop.configure(state="disabled",  bg=P["btn_dim"])
             self._btn_restart.configure(state="disabled", bg=P["btn_dim"])
+            self._btn_update.configure(state="normal", bg=P["btn_util"])
 
         cfg = self.app.prefs
         exe = cfg.get("server_exe") or "Not configured"
@@ -305,13 +386,14 @@ class StatusTab(tk.Frame):
         self._world_lbl.configure(
             text=f"World: {world}" if world else ""
         )
+        self._quick_world.configure(text=world or "World Unset")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  SETUP TAB
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class SetupTab(tk.Frame):
+class SetupTab(ScrollableTab):
     def __init__(self, parent, app):
         super().__init__(parent, bg=P["panel"])
         self.app = app
@@ -321,11 +403,11 @@ class SetupTab(tk.Frame):
         pad = {"padx": 24, "pady": 4}
 
         # Install dir row
-        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(16, 4))
-        _label(self, "Installation", font=("Segoe UI", 10, "bold"),
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(16, 4))
+        _label(self.body, "Installation", font=("Segoe UI", 10, "bold"),
                bg=P["panel"], fg=P["accent"]).pack(anchor="w", **pad)
 
-        dir_row = tk.Frame(self, bg=P["panel"])
+        dir_row = tk.Frame(self.body, bg=P["panel"])
         dir_row.pack(fill="x", **pad)
         _label(dir_row, "Install Folder:", fg=P["subtext"], width=18).pack(side="left")
         self._install_dir_var = tk.StringVar(value=self.app.prefs.get("install_dir", str(Path.home() / "DragonWildsServer")))
@@ -334,7 +416,7 @@ class SetupTab(tk.Frame):
                        bg=P["panel2"], fg=P["text"]).pack(side="left")
 
         # Existing server row
-        exist_row = tk.Frame(self, bg=P["panel"])
+        exist_row = tk.Frame(self.body, bg=P["panel"])
         exist_row.pack(fill="x", **pad)
         _label(exist_row, "Existing Server Exe:", fg=P["subtext"], width=18).pack(side="left")
         self._exe_var = tk.StringVar(value=self.app.prefs.get("server_exe", ""))
@@ -342,16 +424,16 @@ class SetupTab(tk.Frame):
         _styled_button(exist_row, "Browse", self._browse_exe,
                        bg=P["panel2"], fg=P["text"]).pack(side="left")
 
-        tk.Label(self, text="  Point to an existing RSDragonwilds.exe to skip installation",
+        tk.Label(self.body, text="  Point to an existing RSDragonwilds.exe to skip installation",
                  font=("Segoe UI", 7, "italic"), bg=P["panel"], fg=P["subtext"],
                  anchor="w").pack(fill="x", padx=60)
 
         # Action buttons
-        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 4))
-        _label(self, "Actions", font=("Segoe UI", 10, "bold"),
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 4))
+        _label(self.body, "Actions", font=("Segoe UI", 10, "bold"),
                bg=P["panel"], fg=P["accent"]).pack(anchor="w", **pad)
 
-        btn_grid = tk.Frame(self, bg=P["panel"])
+        btn_grid = tk.Frame(self.body, bg=P["panel"])
         btn_grid.pack(fill="x", **pad)
 
         self._btn_full = _styled_button(btn_grid, "[*]  Full Setup",
@@ -379,11 +461,11 @@ class SetupTab(tk.Frame):
                        ).grid(row=2, column=0, padx=(0, 8), pady=4, sticky="w")
 
         # World transfer helper
-        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 4))
-        _label(self, "Move Existing World", font=("Segoe UI", 10, "bold"),
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 4))
+        _label(self.body, "Move Existing World", font=("Segoe UI", 10, "bold"),
                bg=P["panel"], fg=P["accent"]).pack(anchor="w", **pad)
 
-        transfer = tk.Frame(self, bg=P["panel"])
+        transfer = tk.Frame(self.body, bg=P["panel"])
         transfer.pack(fill="x", padx=24, pady=(0, 4))
 
         help_text = (
@@ -436,11 +518,11 @@ class SetupTab(tk.Frame):
         style.configure("D.Horizontal.TProgressbar",
                         troughcolor=P["panel2"], background=P["accent"],
                         bordercolor=P["bg"])
-        self.progress = ttk.Progressbar(self, style="D.Horizontal.TProgressbar",
+        self.progress = ttk.Progressbar(self.body, style="D.Horizontal.TProgressbar",
                                         mode="indeterminate")
         self.progress.pack(fill="x", padx=24, pady=(8, 2))
 
-        self._status_lbl = _label(self, "Ready.", fg=P["subtext"], bg=P["panel"])
+        self._status_lbl = _label(self.body, "Ready.", fg=P["subtext"], bg=P["panel"])
         self._status_lbl.pack(anchor="w", padx=24)
 
     def _browse_install(self):
@@ -486,7 +568,7 @@ class SetupTab(tk.Frame):
 #  CONFIG TAB
 # ═══════════════════════════════════════════════════════════════════════════════
 
-class ConfigTab(tk.Frame):
+class ConfigTab(ScrollableTab):
     def __init__(self, parent, app):
         super().__init__(parent, bg=P["panel"])
         self.app = app
@@ -520,11 +602,11 @@ class ConfigTab(tk.Frame):
 
     def _build(self):
         pad = {"padx": 24, "pady": 4}
-        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(16, 8))
-        _label(self, "Server Configuration", font=("Segoe UI", 10, "bold"),
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(16, 8))
+        _label(self.body, "Server Configuration", font=("Segoe UI", 10, "bold"),
                bg=P["panel"], fg=P["accent"]).pack(anchor="w", **pad)
 
-        grid = tk.Frame(self, bg=P["panel"])
+        grid = tk.Frame(self.body, bg=P["panel"])
         grid.pack(fill="x", padx=24)
 
         fields = [
@@ -539,15 +621,15 @@ class ConfigTab(tk.Frame):
             self._field(grid, key, lbl, hint, row=i, is_pass=pw, highlight=hi)
 
         # Save button
-        tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 8))
-        btn_row = tk.Frame(self, bg=P["panel"])
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 8))
+        btn_row = tk.Frame(self.body, bg=P["panel"])
         btn_row.pack(fill="x", padx=24)
 
         _styled_button(btn_row, "[S]  Save Configuration", self._save, width=24).pack(side="left", padx=(0, 12))
         _styled_button(btn_row, "[R]  Reload from File", self._reload,
                        bg=P["panel2"], fg=P["text"], width=22).pack(side="left")
 
-        self._saved_lbl = _label(self, "", fg=P["success"], bg=P["panel"])
+        self._saved_lbl = _label(self.body, "", fg=P["success"], bg=P["panel"])
         self._saved_lbl.pack(anchor="w", padx=24, pady=(6, 0))
 
     def _load_into_fields(self):
@@ -644,32 +726,36 @@ class DragonwildsManager(tk.Tk):
 
     def _build_ui(self):
         # Title bar
-        title_frame = tk.Frame(self, bg=P["bg"], pady=10)
-        title_frame.pack(fill="x", padx=20)
+        title_frame = tk.Frame(self, bg=P["bg2"], pady=12)
+        title_frame.pack(fill="x", padx=18, pady=(12, 0))
         tk.Label(title_frame, text="RS: Dragonwilds",
-                 font=("Georgia", 18, "bold"),
-                 bg=P["bg"], fg=P["accent"]).pack(side="left")
+                 font=("Georgia", 20, "bold"),
+                 bg=P["bg2"], fg=P["accent"]).pack(side="left")
         tk.Label(title_frame, text="  Server Manager",
-                 font=("Segoe UI", 13),
-                 bg=P["bg"], fg=P["text"]).pack(side="left")
+                 font=("Segoe UI", 14),
+                 bg=P["bg2"], fg=P["text"]).pack(side="left")
         tk.Label(title_frame, text=f"v{APP_VERSION}",
                  font=("Segoe UI", 8),
-                 bg=P["bg"], fg=P["subtext"]).pack(side="left", padx=(8, 0), anchor="s")
+                 bg=P["bg2"], fg=P["subtext"]).pack(side="left", padx=(8, 0), anchor="s")
 
-        tk.Frame(self, bg=P["sep"], height=2).pack(fill="x")
+        tk.Label(title_frame, text="Dedicated server control center",
+                 font=("Segoe UI", 8, "bold"),
+                 bg=P["bg2"], fg=P["muted"]).pack(side="right", padx=(0, 8))
+
+        tk.Frame(self, bg=P["card_border"], height=2).pack(fill="x", padx=18)
 
         # Tabs
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("D.TNotebook",        background=P["bg"],    borderwidth=0)
         style.configure("D.TNotebook.Tab",    background=P["panel2"], foreground=P["subtext"],
-                        padding=[16, 6],      font=("Segoe UI", 9, "bold"))
+                        padding=[18, 8],      font=("Segoe UI", 9, "bold"))
         style.map("D.TNotebook.Tab",
-                  background=[("selected", P["panel"])],
-                  foreground=[("selected", P["accent"])])
+                  background=[("selected", P["panel3"]), ("active", P["panel_hi"])],
+                  foreground=[("selected", P["accent_soft"]), ("active", P["text"])])
 
         nb = ttk.Notebook(self, style="D.TNotebook")
-        nb.pack(fill="both", expand=True, padx=0, pady=0)
+        nb.pack(fill="both", expand=True, padx=18, pady=(10, 0))
 
         self.tab_status = StatusTab(nb, self)
         self.tab_setup  = SetupTab(nb, self)
@@ -680,21 +766,25 @@ class DragonwildsManager(tk.Tk):
         nb.add(self.tab_config, text="  Config  ")
 
         # Bottom bar
-        tk.Frame(self, bg=P["sep"], height=2).pack(fill="x")
-        bottom = tk.Frame(self, bg="#1A1200", pady=3)
-        bottom.pack(fill="x")
+        tk.Frame(self, bg=P["card_border"], height=2).pack(fill="x", padx=18)
+        bottom = tk.Frame(self, bg="#1A1200", pady=5)
+        bottom.pack(fill="x", padx=18, pady=(0, 12))
 
         tk.Label(bottom,
                  text="TIP: Player ID is found in-game -> Settings -> scroll to the very bottom",
                  font=("Segoe UI", 7), bg="#1A1200", fg=P["warn"]
                  ).pack(side="left", padx=12)
 
-        coffee = tk.Label(bottom,
-                          text="Buy me a coffee  buymeacoffee.com/obietek",
-                          font=("Segoe UI", 7, "underline"),
-                          bg="#1A1200", fg=P["coffee"], cursor="hand2")
+        coffee = _styled_button(
+            bottom,
+            "Buy Me A Coffee",
+            lambda: webbrowser.open("https://buymeacoffee.com/obietek"),
+            bg=P["coffee"],
+            fg=P["bg"],
+            width=18,
+            font=("Segoe UI", 8, "bold"),
+        )
         coffee.pack(side="right", padx=12)
-        coffee.bind("<Button-1>", lambda _: webbrowser.open("https://buymeacoffee.com/obietek"))
 
     # ── Monitor ───────────────────────────────────────────────────────────────
 
@@ -790,6 +880,54 @@ class DragonwildsManager(tk.Tk):
                     break
 
             self.after(0, self.start_server)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def update_server_from_status(self):
+        if not messagebox.askyesno(
+            "Update Server",
+            "This will stop the server, check for updates, and restart it when finished.\n\nContinue?",
+        ):
+            return
+
+        install_dir = self.tab_setup.get_install_dir()
+        steamcmd_dir = install_dir / "steamcmd"
+
+        def _worker():
+            was_online = self.monitor.is_online
+
+            if was_online:
+                self.after(0, lambda: self.log.append("Stopping server for update...", "WARN"))
+                self.after(0, lambda: self.stop_server(confirm=False))
+                for _ in range(20):
+                    time.sleep(0.5)
+                    if not self.monitor.is_online:
+                        break
+
+            self.after(0, self.tab_setup.start_progress)
+            self.after(0, lambda: self.tab_setup.set_status("Checking for server updates...", P["warn"]))
+            self.after(0, lambda: self.log.append("Checking for server updates...", "INFO"))
+
+            ok = installer.install_server(install_dir, steamcmd_dir, self.log.append)
+
+            if ok:
+                found = installer.find_server_exe(install_dir)
+                if found:
+                    self.prefs["server_exe"] = found
+                    self.after(0, lambda: self.tab_setup._exe_var.set(found))
+                    settings.save(self.prefs)
+
+            self.after(0, lambda: self.tab_setup.stop_progress(100 if ok else 0))
+
+            if ok:
+                self.after(0, lambda: self.tab_setup.set_status("Server update complete.", P["success"]))
+                self.after(0, lambda: self.log.append("Server update complete.", "OK"))
+                if was_online:
+                    time.sleep(1)
+                    self.after(0, self.start_server)
+            else:
+                self.after(0, lambda: self.tab_setup.set_status("Server update failed -- check the log.", P["error"]))
+                self.after(0, lambda: self.log.append("Server update failed.", "ERROR"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
