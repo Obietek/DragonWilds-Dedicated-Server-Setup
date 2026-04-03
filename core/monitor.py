@@ -5,6 +5,7 @@ Watches for a running RSDragonwilds.exe process and tracks uptime.
 
 import re
 import psutil
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -150,13 +151,22 @@ class ServerMonitor:
         return f"{h:02d}:{m:02d}:{s:02d}"
 
     def kill(self) -> bool:
-        """Terminate the server process. Returns True on success."""
+        """Terminate the server process tree. Returns True on success."""
         if self.pid is None:
             return False
         try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(self.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                return True
+
             proc = psutil.Process(self.pid)
             proc.terminate()
             proc.wait(timeout=5)
             return True
-        except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied, subprocess.SubprocessError):
             return False

@@ -131,6 +131,7 @@ class LogWidget(scrolledtext.ScrolledText):
             wrap="word",
             **kw,
         )
+        self.paused = False
         for tag, color in self.TAG_COLORS.items():
             self.tag_config(tag, foreground=color)
 
@@ -140,7 +141,13 @@ class LogWidget(scrolledtext.ScrolledText):
         self.configure(state="normal")
         self.insert("end", line, level)
         self.configure(state="disabled")
-        self.see("end")
+        if not self.paused:
+            self.see("end")
+
+    def set_paused(self, paused: bool):
+        self.paused = paused
+        if not paused:
+            self.see("end")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -222,9 +229,26 @@ class StatusTab(tk.Frame):
 
         # ── Log ──
         tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(4, 0))
-        _label(self, "Live Log", fg=P["subtext"], bg=P["panel"],
-               font=("Segoe UI", 8)).pack(anchor="w", padx=26, pady=(6, 0))
+        log_header = tk.Frame(self, bg=P["panel"])
+        log_header.pack(fill="x", padx=24, pady=(6, 0))
+        _label(log_header, "Live Log", fg=P["subtext"], bg=P["panel"],
+               font=("Segoe UI", 8)).pack(side="left", padx=(2, 0))
+        self._pause_log_btn = _styled_button(
+            log_header,
+            "Pause Log",
+            self._toggle_log_pause,
+            bg=P["panel2"],
+            fg=P["text"],
+            width=12,
+            font=("Segoe UI", 8, "bold"),
+        )
+        self._pause_log_btn.pack(side="right")
         self.app.log.pack(in_=self, fill="both", expand=True, padx=24, pady=(2, 10))
+
+    def _toggle_log_pause(self):
+        paused = not self.app.log.paused
+        self.app.log.set_paused(paused)
+        self._pause_log_btn.configure(text="Resume Log" if paused else "Pause Log")
 
     def refresh(self, mon: monitor.ServerMonitor):
         """Called by the monitor tick -- update all status widgets."""
