@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from datetime import datetime
 from pathlib import Path
@@ -192,6 +193,17 @@ class StatusTab(tk.Frame):
                                      bg=P["panel"], fg=P["subtext"], anchor="w")
         self._players_lbl.pack(anchor="w")
 
+        self._player_names_lbl = tk.Label(
+            info,
+            text="Players: --",
+            font=("Segoe UI", 8),
+            bg=P["panel"],
+            fg=P["subtext"],
+            anchor="w",
+            justify="left",
+        )
+        self._player_names_lbl.pack(anchor="w", pady=(2, 0))
+
         # ── Server path display ──
         tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24)
 
@@ -223,9 +235,14 @@ class StatusTab(tk.Frame):
                                         bg=P["btn_dim"], fg=P["text"], width=20)
         self._btn_stop.pack(side="left", padx=(0, 8))
 
+        self._btn_restart = _styled_button(btn_row, "[R]  Restart Server",
+                                           self.app.restart_server,
+                                           bg=P["panel2"], fg=P["text"], width=20)
+        self._btn_restart.pack(side="left", padx=(0, 8))
+
         _styled_button(btn_row, "[F]  Open Server Folder",
-                       self.app.open_folder, bg=P["panel2"], fg=P["text"], width=22
-                       ).pack(side="left")
+                        self.app.open_folder, bg=P["panel2"], fg=P["text"], width=22
+                        ).pack(side="left")
 
         # ── Log ──
         tk.Frame(self, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(4, 0))
@@ -243,6 +260,8 @@ class StatusTab(tk.Frame):
             font=("Segoe UI", 8, "bold"),
         )
         self._pause_log_btn.pack(side="right")
+        self.app.log.set_paused(False)
+        self._pause_log_btn.configure(text="Pause Log")
         self.app.log.pack(in_=self, fill="both", expand=True, padx=24, pady=(2, 10))
 
     def _toggle_log_pause(self):
@@ -258,8 +277,14 @@ class StatusTab(tk.Frame):
             self._uptime_lbl.configure(text=f"Uptime: {mon.uptime_str}")
             self._pid_lbl.configure(text=f"PID: {mon.pid}")
             self._players_lbl.configure(text=f"Players Online: {mon.player_count}")
+            if mon.players:
+                names = ", ".join(sorted(mon.players))
+                self._player_names_lbl.configure(text=f"Players: {names}")
+            else:
+                self._player_names_lbl.configure(text="Players: --")
             self._btn_start.configure(state="disabled", bg=P["btn_dim"])
             self._btn_stop.configure(state="normal",   bg="#6E2020")
+            self._btn_restart.configure(state="normal", bg=P["panel2"])
             if mon.exe_path:
                 self._path_lbl.configure(text=mon.exe_path)
         else:
@@ -268,8 +293,10 @@ class StatusTab(tk.Frame):
             self._uptime_lbl.configure(text="Uptime: --")
             self._pid_lbl.configure(text="PID: --")
             self._players_lbl.configure(text="Players Online: 0")
+            self._player_names_lbl.configure(text="Players: --")
             self._btn_start.configure(state="normal",   bg=P["btn_bg"])
             self._btn_stop.configure(state="disabled",  bg=P["btn_dim"])
+            self._btn_restart.configure(state="disabled", bg=P["btn_dim"])
 
         cfg = self.app.prefs
         exe = cfg.get("server_exe") or "Not configured"
@@ -735,15 +762,36 @@ class DragonwildsManager(tk.Tk):
         subprocess.Popen([exe, "-log", "-NewConsole"])
         self.log.append("Server launched -- monitoring for process...", "OK")
 
-    def stop_server(self):
+    def stop_server(self, confirm: bool = True):
         if not self.monitor.is_online:
             return
-        if messagebox.askyesno("Stop Server", "Are you sure you want to stop the server?"):
+        if (not confirm) or messagebox.askyesno("Stop Server", "Are you sure you want to stop the server?"):
             ok = self.monitor.kill()
             if ok:
                 self.log.append("Server stopped.", "OK")
             else:
                 self.log.append("Could not stop server -- try killing it manually in Task Manager.", "ERROR")
+
+    def restart_server(self):
+        if not self.monitor.is_online:
+            self.start_server()
+            return
+
+        if not messagebox.askyesno("Restart Server", "Are you sure you want to restart the server?"):
+            return
+
+        def _worker():
+            self.after(0, lambda: self.log.append("Restarting server...", "WARN"))
+            self.after(0, lambda: self.stop_server(confirm=False))
+
+            for _ in range(10):
+                time.sleep(0.5)
+                if not self.monitor.is_online:
+                    break
+
+            self.after(0, self.start_server)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def open_folder(self):
         exe = self.prefs.get("server_exe", "")
