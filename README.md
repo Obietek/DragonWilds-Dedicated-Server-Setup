@@ -4,6 +4,24 @@
 
 It is built from this project with PyInstaller and outputs a single executable at `dist\DragonwildsManager.exe`.
 
+## Screenshots
+
+### Status Tab
+
+![Status tab](docs/images/status-tab.png)
+
+### Setup Tab
+
+![Setup tab](docs/images/setup-tab.png)
+
+### Config Tab
+
+![Config tab](docs/images/config-tab.png)
+
+### Server Console
+
+![Server console](docs/images/server-console.png)
+
 ## What It Does
 
 The app provides a simple GUI for common dedicated-server tasks:
