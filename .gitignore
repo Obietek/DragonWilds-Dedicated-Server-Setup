@@ -1,0 +1,10 @@
+.vs/
+.claude/
+build/
+dist/
+__pycache__/
+core/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.spec
