@@ -11,6 +11,7 @@ Requirements:
 
 import ctypes
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -143,10 +144,26 @@ class LogWidget(scrolledtext.ScrolledText):
             **kw,
         )
         self.paused = False
+        self._pending = queue.Queue()
+        self._main_thread = threading.main_thread()
         for tag, color in self.TAG_COLORS.items():
             self.tag_config(tag, foreground=color)
 
     def append(self, message: str, level: str = "INFO"):
+        if threading.current_thread() is not self._main_thread:
+            self._pending.put((message, level))
+            return
+        self._append(message, level)
+
+    def drain_pending(self):
+        while True:
+            try:
+                message, level = self._pending.get_nowait()
+            except queue.Empty:
+                return
+            self._append(message, level)
+
+    def _append(self, message: str, level: str):
         ts   = datetime.now().strftime("%H:%M:%S")
         line = f"[{ts}][{level}] {message}\n"
         self.configure(state="normal")
@@ -710,6 +727,9 @@ class DragonwildsManager(tk.Tk):
 
         self.monitor = monitor.ServerMonitor(poll_interval=3)
         self.log = LogWidget(self, height=10)
+        self._ui_tasks = queue.Queue()
+        self._last_online = self.monitor.is_online
+        self._closing = False
 
         self._build_ui()
         self._start_monitor()
@@ -789,21 +809,33 @@ class DragonwildsManager(tk.Tk):
     # ── Monitor ───────────────────────────────────────────────────────────────
 
     def _start_monitor(self):
-        self.monitor.on_tick = self._on_monitor_tick
-        self.monitor.on_status_change = self._on_status_change
         self.monitor.start()
+        self.after(1000, self._ui_tick)
 
-    def _on_monitor_tick(self):
-        # Called from background thread -- schedule UI update on main thread
-        self.after(0, self._refresh_status_tab)
-
-    def _on_status_change(self, is_online: bool):
-        if is_online:
-            self.after(0, lambda: self.log.append("Server process detected -- now online.", "OK"))
+    def _post_to_ui(self, callback):
+        if threading.current_thread() is threading.main_thread():
+            callback()
         else:
-            self.after(0, lambda: self.log.append("Server process stopped -- now offline.", "WARN"))
+            self._ui_tasks.put(callback)
 
-    def _refresh_status_tab(self):
+    def _ui_tick(self):
+        if self._closing:
+            return
+        self.after(1000, self._ui_tick)
+        while True:
+            try:
+                callback = self._ui_tasks.get_nowait()
+            except queue.Empty:
+                break
+            callback()
+        self.log.drain_pending()
+        is_online = self.monitor.is_online
+        if is_online != self._last_online:
+            if is_online:
+                self.log.append("Server process detected -- now online.", "OK")
+            else:
+                self.log.append("Server process stopped -- now offline.", "WARN")
+            self._last_online = is_online
         self.tab_status.refresh(self.monitor)
 
     # ── Actions ───────────────────────────────────────────────────────────────
@@ -849,7 +881,28 @@ class DragonwildsManager(tk.Tk):
         installer.write_config(self.prefs, self.log.append)
 
         self.log.append(f"Launching: {exe}")
-        subprocess.Popen([exe, "-log", "-NewConsole"])
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = (
+                subprocess.DETACHED_PROCESS
+                | subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_BREAKAWAY_FROM_JOB
+            )
+        try:
+            subprocess.Popen(
+                [exe, "-log", "-NewConsole"],
+                creationflags=creationflags,
+                close_fds=True,
+            )
+        except OSError:
+            if not creationflags or not (creationflags & subprocess.CREATE_BREAKAWAY_FROM_JOB):
+                raise
+            creationflags &= ~subprocess.CREATE_BREAKAWAY_FROM_JOB
+            subprocess.Popen(
+                [exe, "-log", "-NewConsole"],
+                creationflags=creationflags,
+                close_fds=True,
+            )
         self.log.append("Server launched -- monitoring for process...", "OK")
 
     def stop_server(self, confirm: bool = True):
@@ -871,15 +924,15 @@ class DragonwildsManager(tk.Tk):
             return
 
         def _worker():
-            self.after(0, lambda: self.log.append("Restarting server...", "WARN"))
-            self.after(0, lambda: self.stop_server(confirm=False))
+            self._post_to_ui(lambda: self.log.append("Restarting server...", "WARN"))
+            self._post_to_ui(lambda: self.stop_server(confirm=False))
 
             for _ in range(10):
                 time.sleep(0.5)
                 if not self.monitor.is_online:
                     break
 
-            self.after(0, self.start_server)
+            self._post_to_ui(self.start_server)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -897,16 +950,16 @@ class DragonwildsManager(tk.Tk):
             was_online = self.monitor.is_online
 
             if was_online:
-                self.after(0, lambda: self.log.append("Stopping server for update...", "WARN"))
-                self.after(0, lambda: self.stop_server(confirm=False))
+                self._post_to_ui(lambda: self.log.append("Stopping server for update...", "WARN"))
+                self._post_to_ui(lambda: self.stop_server(confirm=False))
                 for _ in range(20):
                     time.sleep(0.5)
                     if not self.monitor.is_online:
                         break
 
-            self.after(0, self.tab_setup.start_progress)
-            self.after(0, lambda: self.tab_setup.set_status("Checking for server updates...", P["warn"]))
-            self.after(0, lambda: self.log.append("Checking for server updates...", "INFO"))
+            self._post_to_ui(self.tab_setup.start_progress)
+            self._post_to_ui(lambda: self.tab_setup.set_status("Checking for server updates...", P["warn"]))
+            self._post_to_ui(lambda: self.log.append("Checking for server updates...", "INFO"))
 
             ok = installer.install_server(install_dir, steamcmd_dir, self.log.append)
 
@@ -914,20 +967,20 @@ class DragonwildsManager(tk.Tk):
                 found = installer.find_server_exe(install_dir)
                 if found:
                     self.prefs["server_exe"] = found
-                    self.after(0, lambda: self.tab_setup._exe_var.set(found))
+                    self._post_to_ui(lambda: self.tab_setup._exe_var.set(found))
                     settings.save(self.prefs)
 
-            self.after(0, lambda: self.tab_setup.stop_progress(100 if ok else 0))
+            self._post_to_ui(lambda: self.tab_setup.stop_progress(100 if ok else 0))
 
             if ok:
-                self.after(0, lambda: self.tab_setup.set_status("Server update complete.", P["success"]))
-                self.after(0, lambda: self.log.append("Server update complete.", "OK"))
+                self._post_to_ui(lambda: self.tab_setup.set_status("Server update complete.", P["success"]))
+                self._post_to_ui(lambda: self.log.append("Server update complete.", "OK"))
                 if was_online:
                     time.sleep(1)
-                    self.after(0, self.start_server)
+                    self._post_to_ui(self.start_server)
             else:
-                self.after(0, lambda: self.tab_setup.set_status("Server update failed -- check the log.", P["error"]))
-                self.after(0, lambda: self.log.append("Server update failed.", "ERROR"))
+                self._post_to_ui(lambda: self.tab_setup.set_status("Server update failed -- check the log.", P["error"]))
+                self._post_to_ui(lambda: self.log.append("Server update failed.", "ERROR"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -978,13 +1031,13 @@ class DragonwildsManager(tk.Tk):
             exe = installer.find_server_exe(self.tab_setup.get_install_dir()) or ""
 
         def _worker():
-            self.after(0, self.tab_setup.start_progress)
-            self.after(0, lambda: self.tab_setup.set_status("Backing up SaveGames...", P["warn"]))
+            self._post_to_ui(self.tab_setup.start_progress)
+            self._post_to_ui(lambda: self.tab_setup.set_status("Backing up SaveGames...", P["warn"]))
             ok = installer.backup_savegames(Path(destination), exe, self.log.append)
-            self.after(0, lambda: self.tab_setup.stop_progress(100 if ok else 0))
+            self._post_to_ui(lambda: self.tab_setup.stop_progress(100 if ok else 0))
             msg = "SaveGames backup complete." if ok else "Backup skipped or failed -- check the log."
             color = P["success"] if ok else P["error"]
-            self.after(0, lambda: self.tab_setup.set_status(msg, color))
+            self._post_to_ui(lambda: self.tab_setup.set_status(msg, color))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -993,12 +1046,13 @@ class DragonwildsManager(tk.Tk):
         if errs:
             messagebox.showwarning("Missing Config", "\n".join(errs))
             return
+        cfg = self.tab_config.get_cfg()
+        install_dir = self.tab_setup.get_install_dir()
 
         def _worker():
-            self.after(0, self.tab_setup.start_progress)
-            self.after(0, lambda: self.tab_setup.set_status("Running full setup...", P["warn"]))
+            self._post_to_ui(self.tab_setup.start_progress)
+            self._post_to_ui(lambda: self.tab_setup.set_status("Running full setup...", P["warn"]))
 
-            install_dir  = self.tab_setup.get_install_dir()
             steamcmd_dir = install_dir / "steamcmd"
 
             # Step 1 - SteamCMD
@@ -1008,16 +1062,16 @@ class DragonwildsManager(tk.Tk):
             else:
                 ok = installer.download_steamcmd(steamcmd_dir, self.log.append)
                 if not ok:
-                    self.after(0, lambda: self.tab_setup.stop_progress(0))
-                    self.after(0, lambda: self.tab_setup.set_status("Failed at SteamCMD step.", P["error"]))
+                    self._post_to_ui(lambda: self.tab_setup.stop_progress(0))
+                    self._post_to_ui(lambda: self.tab_setup.set_status("Failed at SteamCMD step.", P["error"]))
                     return
 
             # Step 2 - Server files
             self.log.append("=== STEP 2/4: Server Files ===")
             ok = installer.install_server(install_dir, steamcmd_dir, self.log.append)
             if not ok:
-                self.after(0, lambda: self.tab_setup.stop_progress(0))
-                self.after(0, lambda: self.tab_setup.set_status("Failed at server install step.", P["error"]))
+                self._post_to_ui(lambda: self.tab_setup.stop_progress(0))
+                self._post_to_ui(lambda: self.tab_setup.set_status("Failed at server install step.", P["error"]))
                 return
 
             # Save resolved exe
@@ -1027,7 +1081,6 @@ class DragonwildsManager(tk.Tk):
 
             # Step 3 - Config
             self.log.append("=== STEP 3/4: Configuration ===")
-            cfg = self.tab_config.get_cfg()
             self.prefs.update(cfg)
             settings.save(self.prefs)
             installer.write_config(self.prefs, self.log.append)
@@ -1038,8 +1091,8 @@ class DragonwildsManager(tk.Tk):
             installer.set_firewall(port, self.log.append)
 
             settings.save(self.prefs)
-            self.after(0, lambda: self.tab_setup.stop_progress(100))
-            self.after(0, lambda: self.tab_setup.set_status("Setup complete! Go to Status tab to launch.", P["success"]))
+            self._post_to_ui(lambda: self.tab_setup.stop_progress(100))
+            self._post_to_ui(lambda: self.tab_setup.set_status("Setup complete! Go to Status tab to launch.", P["success"]))
             self.log.append("Full setup complete!", "OK")
 
         threading.Thread(target=_worker, daemon=True).start()
@@ -1050,7 +1103,7 @@ class DragonwildsManager(tk.Tk):
 
         def _worker():
             installer.set_firewall(port, self.log.append)
-            self.after(0, lambda: self.tab_setup.set_status(f"Firewall rules updated for UDP {port}.", P["success"]))
+            self._post_to_ui(lambda: self.tab_setup.set_status(f"Firewall rules updated for UDP {port}.", P["success"]))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1059,13 +1112,13 @@ class DragonwildsManager(tk.Tk):
         steamcmd_dir = install_dir / "steamcmd"
 
         def _worker():
-            self.after(0, self.tab_setup.start_progress)
-            self.after(0, lambda: self.tab_setup.set_status("Updating server files...", P["warn"]))
+            self._post_to_ui(self.tab_setup.start_progress)
+            self._post_to_ui(lambda: self.tab_setup.set_status("Updating server files...", P["warn"]))
             ok = installer.install_server(install_dir, steamcmd_dir, self.log.append)
-            self.after(0, lambda: self.tab_setup.stop_progress(100 if ok else 0))
+            self._post_to_ui(lambda: self.tab_setup.stop_progress(100 if ok else 0))
             msg = "Update complete!" if ok else "Update failed -- check the log."
             color = P["success"] if ok else P["error"]
-            self.after(0, lambda: self.tab_setup.set_status(msg, color))
+            self._post_to_ui(lambda: self.tab_setup.set_status(msg, color))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1107,19 +1160,19 @@ class DragonwildsManager(tk.Tk):
             return
 
         def _worker():
-            self.after(0, self.tab_setup.start_progress)
-            self.after(0, lambda: self.tab_setup.set_status("Deleting server files...", P["warn"]))
+            self._post_to_ui(self.tab_setup.start_progress)
+            self._post_to_ui(lambda: self.tab_setup.set_status("Deleting server files...", P["warn"]))
             ok = installer.delete_server_files(install_dir, self.log.append)
 
             if ok:
                 self.prefs["server_exe"] = ""
-                self.after(0, lambda: self.tab_setup._exe_var.set(""))
+                self._post_to_ui(lambda: self.tab_setup._exe_var.set(""))
                 settings.save(self.prefs)
 
-            self.after(0, lambda: self.tab_setup.stop_progress(100 if ok else 0))
+            self._post_to_ui(lambda: self.tab_setup.stop_progress(100 if ok else 0))
             msg = "Server files deleted." if ok else "Delete failed -- check the log."
             color = P["success"] if ok else P["error"]
-            self.after(0, lambda: self.tab_setup.set_status(msg, color))
+            self._post_to_ui(lambda: self.tab_setup.set_status(msg, color))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1140,6 +1193,7 @@ class DragonwildsManager(tk.Tk):
             self.geometry(f"820x680+{cx}+{cy}")
 
     def _on_close(self):
+        self._closing = True
         self.prefs["window_x"] = self.winfo_x()
         self.prefs["window_y"] = self.winfo_y()
         settings.save(self.prefs)
