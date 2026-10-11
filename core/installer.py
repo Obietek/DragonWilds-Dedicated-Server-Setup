@@ -6,42 +6,76 @@ All SteamCMD download, server install, config write, and firewall logic.
 import os
 import shutil
 import subprocess
+import sys
+import tarfile
 import textwrap
+import time
 import urllib.request
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
 
 
-STEAM_CMD_URL = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
+STEAM_CMD_URL_WINDOWS = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd.zip"
+STEAM_CMD_URL_LINUX = "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz"
 STEAM_APP_ID  = "4019830"
-SERVER_EXE    = "RSDragonwildsServer.exe"
+IS_WINDOWS    = sys.platform == "win32"
+IS_LINUX      = sys.platform.startswith("linux")
+SERVER_EXE    = "RSDragonwildsServer.exe" if IS_WINDOWS else "RSDragonwildsServer"
 STEAM_APP_DIR = "RuneScape Dragonwilds Dedicated Server"
 
-LOCAL_APP     = Path(os.getenv("LOCALAPPDATA", r"C:\Users\Default\AppData\Local"))
-CONFIG_WIN    = LOCAL_APP / "RSDragonwilds" / "Saved" / "Config" / "WindowsServer"
-CONFIG_FILE   = CONFIG_WIN / "DedicatedServer.ini"
-SAVEGAMES_DIR = LOCAL_APP / "RSDragonwilds" / "Saved" / "SaveGames"
+if IS_WINDOWS:
+    LOCAL_APP = Path(os.getenv("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    CONFIG_PLATFORM = "WindowsServer"
+    SAVE_APP = LOCAL_APP
+elif IS_LINUX:
+    LOCAL_APP = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config"))
+    CONFIG_PLATFORM = "LinuxServer"
+    SAVE_APP = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+else:
+    LOCAL_APP = Path.home() / "Library" / "Application Support"
+    CONFIG_PLATFORM = "LinuxServer"
+    SAVE_APP = LOCAL_APP
+
+CONFIG_DIR = LOCAL_APP / "RSDragonwilds" / "Saved" / "Config" / CONFIG_PLATFORM
+CONFIG_FILE = CONFIG_DIR / "DedicatedServer.ini"
+SAVEGAMES_DIR = SAVE_APP / "RSDragonwilds" / "Saved" / "SaveGames"
+
+BACKUP_QUIET_SECONDS = 5     # saves must be untouched this long before a backup starts
+BACKUP_QUIET_TIMEOUT = 60    # give up waiting for a quiet moment after this long
+BACKUP_COPY_ATTEMPTS = 3     # tries per file if it is locked or changes mid-copy
+BACKUP_RETRY_DELAY = 1.0
+PARTIAL_BACKUP_SUFFIX = ".partial"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # SteamCMD
 # ──────────────────────────────────────────────────────────────────────────────
 
+def steamcmd_executable(steamcmd_dir: Path) -> Path:
+    return steamcmd_dir / ("steamcmd.sh" if IS_LINUX else "steamcmd.exe")
+
+
 def download_steamcmd(steamcmd_dir: Path, log, progress_cb=None) -> bool:
     log("Downloading SteamCMD...")
     steamcmd_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = steamcmd_dir / "steamcmd.zip"
+    is_linux = sys.platform.startswith("linux")
+    archive_path = steamcmd_dir / ("steamcmd_linux.tar.gz" if is_linux else "steamcmd.zip")
+    url = STEAM_CMD_URL_LINUX if is_linux else STEAM_CMD_URL_WINDOWS
     try:
         def _reporthook(block, block_size, total):
             if progress_cb and total > 0:
                 progress_cb(block * block_size, total)
 
-        urllib.request.urlretrieve(STEAM_CMD_URL, zip_path, _reporthook)
+        urllib.request.urlretrieve(url, archive_path, _reporthook)
         log("Extracting SteamCMD...")
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            zf.extractall(steamcmd_dir)
-        zip_path.unlink(missing_ok=True)
+        if is_linux:
+            with tarfile.open(archive_path, "r:gz") as archive:
+                archive.extractall(steamcmd_dir, filter="data")
+        else:
+            with zipfile.ZipFile(archive_path, "r") as archive:
+                archive.extractall(steamcmd_dir)
+        archive_path.unlink(missing_ok=True)
         log(f"SteamCMD ready at {steamcmd_dir}", "OK")
         return True
     except Exception as exc:
@@ -50,9 +84,9 @@ def download_steamcmd(steamcmd_dir: Path, log, progress_cb=None) -> bool:
 
 
 def install_server(install_dir: Path, steamcmd_dir: Path, log) -> bool:
-    exe = steamcmd_dir / "steamcmd.exe"
+    exe = steamcmd_executable(steamcmd_dir)
     if not exe.exists():
-        log("steamcmd.exe not found.", "ERROR")
+        log(f"{exe.name} not found.", "ERROR")
         return False
 
     try:
@@ -96,21 +130,25 @@ def install_server(install_dir: Path, steamcmd_dir: Path, log) -> bool:
 
 
 def find_server_exe(install_dir: Path):
-    """Search common locations for RSDragonwildsServer.exe and return its path or None."""
-    candidates = [
-        # SteamCMD installs into its own steamapps folder inside steamcmd_dir
-        install_dir / "steamcmd" / "steamapps" / "common" / STEAM_APP_DIR / SERVER_EXE,
-        # Direct install (if force_install_dir puts files at root)
-        install_dir / SERVER_EXE,
-        install_dir / "steamapps" / "common" / STEAM_APP_DIR / SERVER_EXE,
+    """Find a supported server binary beneath the install directory."""
+    names = (["RSDragonwildsServer-Linux-Shipping", "RSDragonwildsServer", "RSDragonwildsServer.exe"]
+             if IS_LINUX else ["RSDragonwildsServer.exe"])
+    roots = [
+        install_dir / "steamcmd" / "steamapps" / "common" / STEAM_APP_DIR,
+        install_dir,
+        install_dir / "steamapps" / "common" / STEAM_APP_DIR,
     ]
-    for c in candidates:
-        if c.exists():
-            return str(c)
-
-    # Recursive search under install_dir
-    for match in install_dir.rglob(SERVER_EXE):
-        return str(match)
+    for name in names:
+        for root in roots:
+            candidate = root / name
+            if candidate.is_file():
+                return str(candidate)
+        try:
+            for match in install_dir.rglob(name):
+                if match.is_file():
+                    return str(match)
+        except OSError:
+            break
 
     return None
 
@@ -131,9 +169,23 @@ def delete_server_files(install_dir: Path, log) -> bool:
         log(f"Install path is not a directory: {target}", "ERROR")
         return False
 
-    # Refuse obviously dangerous targets.
-    if target == target.anchor or len(target.parts) < 2:
+    # Refuse obviously dangerous targets: a drive root, the home folder, or anything above it.
+    home = Path.home().resolve()
+    if target == Path(target.anchor) or target == home or target in home.parents:
         log(f"Refusing to delete unsafe path: {target}", "ERROR")
+        return False
+
+    # Only delete folders that are empty or actually hold a server install.
+    try:
+        is_empty = not any(target.iterdir())
+    except OSError as exc:
+        log(f"Could not inspect install directory: {exc}", "ERROR")
+        return False
+    if not is_empty and not _looks_like_server_install(target):
+        log(
+            f"Refusing to delete {target}: no steamcmd folder or server executable was found in it.",
+            "ERROR",
+        )
         return False
 
     try:
@@ -144,6 +196,14 @@ def delete_server_files(install_dir: Path, log) -> bool:
     except Exception as exc:
         log(f"Failed to delete server files: {exc}", "ERROR")
         return False
+
+
+def _looks_like_server_install(path: Path) -> bool:
+    return (
+        (path / "steamcmd").is_dir()
+        or (path / "steamapps").is_dir()
+        or find_server_exe(path) is not None
+    )
 
 
 def _list_dir(path: Path, log, depth: int = 0, max_depth: int = 3):
@@ -169,9 +229,10 @@ def _dedicated_config_paths_from_exe(exe_path: str) -> list[Path]:
     if not p.is_file():
         return []
     base = p.parent
+    config_platform = "WindowsServer" if p.suffix.lower() == ".exe" else CONFIG_PLATFORM
     return [
-        base / "RSDragonwilds" / "Saved" / "Config" / "WindowsServer" / "DedicatedServer.ini",
-        base / "Saved" / "Config" / "WindowsServer" / "DedicatedServer.ini",
+        base / "RSDragonwilds" / "Saved" / "Config" / config_platform / "DedicatedServer.ini",
+        base / "Saved" / "Config" / config_platform / "DedicatedServer.ini",
     ]
 
 
@@ -189,7 +250,9 @@ def dedicated_savegames_paths_from_exe(exe_path: str) -> list[Path]:
     ]
 
 
-def backup_savegames(destination_root: Path, exe_path: str, log) -> bool:
+def backup_savegames(destination_root: Path, exe_path: str, log,
+                     quiet_seconds: float = BACKUP_QUIET_SECONDS,
+                     quiet_timeout: float = BACKUP_QUIET_TIMEOUT) -> bool:
     sources: list[tuple[str, Path]] = []
     if SAVEGAMES_DIR.exists():
         sources.append(("LocalSaveGames", SAVEGAMES_DIR))
@@ -205,24 +268,31 @@ def backup_savegames(destination_root: Path, exe_path: str, log) -> bool:
         log("No SaveGames folders were found to back up.", "WARN")
         return False
 
+    # The server may be mid-save; give it a moment to finish before copying.
+    if not _wait_for_quiet_saves([src for _, src in sources], log, quiet_seconds, quiet_timeout):
+        log("SaveGames are still being written -- backing up anyway and verifying each file.", "WARN")
+
     destination_root = Path(destination_root)
-    backup_root = None
+    staging_root = None
     try:
         destination_root.mkdir(parents=True, exist_ok=True)
+        _remove_stale_partial_backups(destination_root)
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup_root = destination_root / f"DragonwildsBackup-{stamp}"
         if backup_root.exists():
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             backup_root = destination_root / f"DragonwildsBackup-{stamp}"
-        backup_root.mkdir()
 
+        # Build the backup under a .partial name so an incomplete copy never looks finished.
+        staging_root = destination_root / f"{backup_root.name}{PARTIAL_BACKUP_SUFFIX}"
+        staging_root.mkdir()
         for label, src in sources:
-            dest = backup_root / label
-            shutil.copytree(src, dest)
-            log(f"Backed up {src} to {dest}", "OK")
+            _copy_tree_stable(src, staging_root / label)
+            log(f"Backed up {src} to {backup_root / label}", "OK")
+        staging_root.rename(backup_root)
     except OSError as exc:
-        if backup_root is not None:
-            shutil.rmtree(backup_root, ignore_errors=True)
+        if staging_root is not None:
+            shutil.rmtree(staging_root, ignore_errors=True)
         log(f"SaveGames backup failed: {exc}", "ERROR")
         return False
 
@@ -230,9 +300,119 @@ def backup_savegames(destination_root: Path, exe_path: str, log) -> bool:
     return True
 
 
+def _latest_mtime(root: Path) -> float:
+    latest = 0.0
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for name in filenames:
+            try:
+                latest = max(latest, (Path(dirpath) / name).stat().st_mtime)
+            except OSError:
+                continue
+    return latest
+
+
+def _wait_for_quiet_saves(sources: list[Path], log, quiet_seconds: float, timeout: float) -> bool:
+    """Wait until no save file has been modified for `quiet_seconds`. False if it never settles."""
+    if quiet_seconds <= 0:
+        return True
+    deadline = time.monotonic() + timeout
+    announced = False
+    while True:
+        idle = time.time() - max(_latest_mtime(src) for src in sources)
+        if idle >= quiet_seconds:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        if not announced:
+            log("SaveGames were just written -- waiting for the server to finish saving...")
+            announced = True
+        time.sleep(1)
+
+
+def _file_signature(path: Path) -> tuple[int, int]:
+    stat = path.stat()
+    return stat.st_size, stat.st_mtime_ns
+
+
+def _copy_file_stable(src: Path, dest: Path) -> None:
+    """Copy one file, retrying if it was locked or changed while being copied."""
+    last_error = None
+    for attempt in range(BACKUP_COPY_ATTEMPTS):
+        if attempt:
+            time.sleep(BACKUP_RETRY_DELAY)
+        try:
+            before = _file_signature(src)
+            shutil.copy2(src, dest)
+            if _file_signature(src) == before:
+                return
+            last_error = None
+        except FileNotFoundError:
+            # The server removed the file (e.g. a temp file); nothing left to back up.
+            dest.unlink(missing_ok=True)
+            return
+        except OSError as exc:
+            last_error = exc
+    reason = last_error or "it kept changing while being copied"
+    raise OSError(f"could not get a clean copy of {src}: {reason}")
+
+
+def _copy_tree_stable(src: Path, dest: Path) -> None:
+    for dirpath, _dirnames, filenames in os.walk(src):
+        target_dir = dest / Path(dirpath).relative_to(src)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        for name in filenames:
+            _copy_file_stable(Path(dirpath) / name, target_dir / name)
+
+
+def _remove_stale_partial_backups(destination_root: Path) -> None:
+    """Clear staging folders left behind by a backup that was interrupted."""
+    cutoff = time.time() - 3600
+    for partial in destination_root.glob(f"DragonwildsBackup-*{PARTIAL_BACKUP_SUFFIX}"):
+        try:
+            if partial.is_dir() and partial.stat().st_mtime < cutoff:
+                shutil.rmtree(partial, ignore_errors=True)
+        except OSError:
+            continue
+
+
+def prune_savegame_backups(destination_root: Path, retention_days: int, log,
+                           keep_latest: int = 3) -> int:
+    """Delete expired backups, always keeping the newest `keep_latest` regardless of age."""
+    if retention_days < 1 or not destination_root.is_dir():
+        return 0
+
+    backups: list[tuple[datetime, Path]] = []
+    for backup_root in destination_root.glob("DragonwildsBackup-*"):
+        if not backup_root.is_dir():
+            continue
+        try:
+            stamp = backup_root.name.removeprefix("DragonwildsBackup-")
+            try:
+                created_at = datetime.strptime(stamp, "%Y%m%d-%H%M%S")
+            except ValueError:
+                created_at = datetime.strptime(stamp, "%Y%m%d-%H%M%S-%f")
+        except ValueError:
+            continue
+        backups.append((created_at, backup_root))
+
+    backups.sort(key=lambda item: item[0], reverse=True)
+    cutoff = datetime.now() - timedelta(days=retention_days)
+    deleted = 0
+    for created_at, backup_root in backups[max(keep_latest, 0):]:
+        if created_at >= cutoff:
+            continue
+        try:
+            shutil.rmtree(backup_root)
+            log(f"Deleted expired backup: {backup_root}", "INFO")
+            deleted += 1
+        except OSError as exc:
+            log(f"Could not delete expired backup {backup_root}: {exc}", "WARN")
+    return deleted
+
+
 def write_config(cfg: dict, log) -> None:
     log("Writing DedicatedServer.ini...")
-    CONFIG_WIN.mkdir(parents=True, exist_ok=True)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     SAVEGAMES_DIR.mkdir(parents=True, exist_ok=True)
 
     owner_id = str(cfg.get("owner_id", "")).strip()
@@ -262,34 +442,6 @@ def write_config(cfg: dict, log) -> None:
         AdminPassword={admin_pass}
         WorldPassword={world_pass}
         Port={port}
-def prune_savegame_backups(destination_root: Path, retention_days: int, log) -> int:
-    if retention_days < 1 or not destination_root.is_dir():
-        return 0
-
-    cutoff = datetime.now() - timedelta(days=retention_days)
-    deleted = 0
-    for backup_root in destination_root.glob("DragonwildsBackup-*"):
-        if not backup_root.is_dir():
-            continue
-        try:
-            stamp = backup_root.name.removeprefix("DragonwildsBackup-")
-            try:
-                created_at = datetime.strptime(stamp, "%Y%m%d-%H%M%S")
-            except ValueError:
-                created_at = datetime.strptime(stamp, "%Y%m%d-%H%M%S-%f")
-        except ValueError:
-            continue
-        if created_at >= cutoff:
-            continue
-        try:
-            shutil.rmtree(backup_root)
-            log(f"Deleted expired backup: {backup_root}", "INFO")
-            deleted += 1
-        except OSError as exc:
-            log(f"Could not delete expired backup {backup_root}: {exc}", "WARN")
-    return deleted
-
-
     """)
 
     # Primary config location (LocalAppData)
@@ -333,6 +485,38 @@ def read_config(config_path: Path = None) -> dict:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def set_firewall(port: int, log) -> None:
+    if IS_LINUX:
+        if shutil.which("ufw"):
+            log(f"Configuring UFW for UDP {port}...")
+            for direction in ("in", "out"):
+                port_spec = f"{port}/udp"
+                result = subprocess.run(
+                    ["ufw", "allow", direction, port_spec],
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    log(f"UFW {direction} rule for UDP {port} created.", "OK")
+                else:
+                    log(f"Failed to create UFW {direction} rule: {result.stderr.strip()}", "ERROR")
+            log("Firewall configured. Router UDP port forwarding may also be required.", "WARN")
+            return
+        if shutil.which("firewall-cmd"):
+            log(f"Configuring firewalld for UDP {port}...")
+            result = subprocess.run(
+                ["firewall-cmd", "--permanent", f"--add-port={port}/udp"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                subprocess.run(["firewall-cmd", "--reload"], capture_output=True, text=True)
+                log(f"firewalld opened UDP {port}.", "OK")
+            else:
+                log(f"Failed to configure firewalld: {result.stderr.strip()}", "ERROR")
+            return
+        log("No supported firewall tool found (ufw or firewall-cmd); configure UDP manually.", "WARN")
+        return
+
     log(f"Configuring Windows Firewall for UDP {port}...")
     for direction in ("in", "out"):
         name = f"RSDragonwilds-UDP-{port}-{direction}"

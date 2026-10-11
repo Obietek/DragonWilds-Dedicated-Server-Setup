@@ -3,7 +3,7 @@ DragonwildsManager - main.py
 A full desktop application for managing a RuneScape: Dragonwilds dedicated server.
 
 Run:  python main.py
-Build: python build.py   (produces dist/DragonwildsManager.exe)
+Build: python build.py   (produces a platform-specific executable)
 
 Requirements:
   pip install psutil pyinstaller
@@ -12,6 +12,7 @@ Requirements:
 import ctypes
 import os
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -78,10 +79,22 @@ APP_TITLE   = f"Dragonwilds Server Manager  v{APP_VERSION}"
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def is_admin() -> bool:
-    try:
-        return ctypes.windll.shell32.IsUserAnAdmin()
-    except Exception:
-        return False
+    if os.name == "nt":
+        try:
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        except Exception:
+            return False
+    return hasattr(os, "geteuid") and os.geteuid() == 0
+
+
+def open_path(path: str | Path) -> None:
+    path = str(path)
+    if os.name == "nt":
+        os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
 
 
 def _styled_button(parent, text, command, bg=None, fg=None, width=None, font=None):
@@ -435,13 +448,13 @@ class SetupTab(ScrollableTab):
         # Existing server row
         exist_row = tk.Frame(self.body, bg=P["panel"])
         exist_row.pack(fill="x", **pad)
-        _label(exist_row, "Existing Server Exe:", fg=P["subtext"], width=18).pack(side="left")
+        _label(exist_row, "Existing Server:", fg=P["subtext"], width=18).pack(side="left")
         self._exe_var = tk.StringVar(value=self.app.prefs.get("server_exe", ""))
         _entry(exist_row, self._exe_var, width=40).pack(side="left", padx=(4, 6))
         _styled_button(exist_row, "Browse", self._browse_exe,
                        bg=P["panel2"], fg=P["text"]).pack(side="left")
 
-        tk.Label(self.body, text="  Point to an existing RSDragonwilds.exe to skip installation",
+        tk.Label(self.body, text="  Point to an existing server executable to skip installation",
                  font=("Segoe UI", 7, "italic"), bg=P["panel"], fg=P["subtext"],
                  anchor="w").pack(fill="x", padx=60)
 
@@ -529,19 +542,6 @@ class SetupTab(ScrollableTab):
             width=22,
         ).grid(row=2, column=0, padx=(0, 8), pady=4, sticky="w")
 
-        # Progress bar
-        style = ttk.Style()
-        style.theme_use("clam")
-        style.configure("D.Horizontal.TProgressbar",
-                        troughcolor=P["panel2"], background=P["accent"],
-                        bordercolor=P["bg"])
-        self.progress = ttk.Progressbar(self.body, style="D.Horizontal.TProgressbar",
-                                        mode="indeterminate")
-        self.progress.pack(fill="x", padx=24, pady=(8, 2))
-
-        self._status_lbl = _label(self.body, "Ready.", fg=P["subtext"], bg=P["panel"])
-        self._status_lbl.pack(anchor="w", padx=24)
-
         tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 4))
         _label(self.body, "Automatic Backups", font=("Segoe UI", 10, "bold"),
                bg=P["panel"], fg=P["accent"]).pack(anchor="w", **pad)
@@ -596,6 +596,19 @@ class SetupTab(ScrollableTab):
                        self.app.save_backup_settings,
                        bg=P["panel2"], fg=P["text"]).pack(side="left")
 
+        # Progress bar
+        style = ttk.Style()
+        style.theme_use("clam")
+        style.configure("D.Horizontal.TProgressbar",
+                        troughcolor=P["panel2"], background=P["accent"],
+                        bordercolor=P["bg"])
+        self.progress = ttk.Progressbar(self.body, style="D.Horizontal.TProgressbar",
+                                        mode="indeterminate")
+        self.progress.pack(fill="x", padx=24, pady=(8, 2))
+
+        self._status_lbl = _label(self.body, "Ready.", fg=P["subtext"], bg=P["panel"])
+        self._status_lbl.pack(anchor="w", padx=24)
+
     def _browse_install(self):
         d = filedialog.askdirectory(title="Choose install folder",
                                     initialdir=self._install_dir_var.get())
@@ -606,13 +619,22 @@ class SetupTab(ScrollableTab):
 
     def _browse_exe(self):
         f = filedialog.askopenfilename(
-            title="Select RSDragonwilds.exe",
-            filetypes=[("Executable", "*.exe"), ("All files", "*.*")],
+            title="Select server executable",
+            filetypes=[("All files", "*.*")],
         )
         if f:
             self._exe_var.set(f)
             self.app.prefs["server_exe"] = f
             settings.save(self.app.prefs)
+
+    def _browse_backup_dir(self):
+        current = Path(self._backup_dir_var.get()).expanduser()
+        destination = filedialog.askdirectory(
+            title="Choose backup folder",
+            initialdir=str(current if current.is_dir() else Path.home()),
+        )
+        if destination:
+            self._backup_dir_var.set(destination)
 
     def set_status(self, text: str, color: str = None):
         self._status_lbl.configure(text=text, fg=color or P["subtext"])
@@ -627,15 +649,6 @@ class SetupTab(ScrollableTab):
         self.progress.stop()
         self.progress.configure(mode="determinate", value=pct)
         self._btn_full.configure(state="normal", bg=P["btn_bg"])
-    def _browse_backup_dir(self):
-        current = Path(self._backup_dir_var.get()).expanduser()
-        destination = filedialog.askdirectory(
-            title="Choose backup folder",
-            initialdir=str(current if current.is_dir() else Path.home()),
-        )
-        if destination:
-            self._backup_dir_var.set(destination)
-
 
     def get_install_dir(self) -> Path:
         return Path(self._install_dir_var.get())
@@ -746,6 +759,15 @@ class ConfigTab(ScrollableTab):
     def get_cfg(self) -> dict:
         return {k: v.get().strip() for k, v in self._vars.items()}
 
+    def get_port(self) -> int | None:
+        """Return the configured port (7777 if blank), or None if it is not a valid port."""
+        value = self._vars["port"].get().strip() or "7777"
+        try:
+            port = int(value)
+        except ValueError:
+            return None
+        return port if 1 <= port <= 65535 else None
+
     def validate(self) -> list[str]:
         cfg  = self.get_cfg()
         errs = []
@@ -753,6 +775,7 @@ class ConfigTab(ScrollableTab):
         if not cfg.get("server_name"): errs.append("Server Name is required.")
         if not cfg.get("world_name"):  errs.append("Default World Name is required.")
         if not cfg.get("admin_pass"):  errs.append("Admin Password is required.")
+        if self.get_port() is None:    errs.append("Server Port must be a number from 1 to 65535.")
         return errs
 
 
@@ -793,6 +816,8 @@ class DragonwildsManager(tk.Tk):
         self._ui_tasks = queue.Queue()
         self._last_online = self.monitor.is_online
         self._closing = False
+        self._backup_stop = threading.Event()
+        self._backup_thread = None
 
         self._build_ui()
         self._start_monitor()
@@ -800,14 +825,11 @@ class DragonwildsManager(tk.Tk):
 
         self.log.append(f"Dragonwilds Server Manager v{APP_VERSION} ready.")
         if not is_admin():
-            self.log.append("Not running as Administrator -- firewall changes may fail.", "WARN")
-            self.log.append("Right-click the app and choose Run as Administrator for full functionality.", "WARN")
+            self.log.append("Not running with elevated privileges -- firewall changes may fail.", "WARN")
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── UI ────────────────────────────────────────────────────────────────────
-        self._backup_stop = threading.Event()
-        self._backup_thread = None
 
     def _build_ui(self):
         # Title bar
@@ -875,22 +897,10 @@ class DragonwildsManager(tk.Tk):
 
     def _start_monitor(self):
         self.monitor.start()
-        self.after(1000, self._ui_tick)
-
-    def _post_to_ui(self, callback):
-        if threading.current_thread() is threading.main_thread():
-            callback()
-        else:
-            self._ui_tasks.put(callback)
-
-    def _ui_tick(self):
-        if self._closing:
-            return
-        self.after(1000, self._ui_tick)
         self._backup_thread = threading.Thread(target=self._backup_loop, daemon=True)
         self._backup_thread.start()
-        while True:
-            try:
+        self.after(1000, self._ui_tick)
+
     def _backup_loop(self):
         next_backup_at = None
         next_cleanup_at = 0
@@ -937,6 +947,18 @@ class DragonwildsManager(tk.Tk):
 
             self._backup_stop.wait(1)
 
+    def _post_to_ui(self, callback):
+        if threading.current_thread() is threading.main_thread():
+            callback()
+        else:
+            self._ui_tasks.put(callback)
+
+    def _ui_tick(self):
+        if self._closing:
+            return
+        self.after(1000, self._ui_tick)
+        while True:
+            try:
                 callback = self._ui_tasks.get_nowait()
             except queue.Empty:
                 break
@@ -964,7 +986,7 @@ class DragonwildsManager(tk.Tk):
         if not exe or not Path(exe).exists():
             messagebox.showerror(
                 "Server Not Found",
-                "Cannot find RSDragonwilds.exe.\n\n"
+                "Cannot find a server executable.\n\n"
                 "Either:\n"
                 "  1. Run Full Setup on the Setup tab to install it.\n"
                 "  2. Browse to an existing exe on the Setup tab.",
@@ -986,7 +1008,7 @@ class DragonwildsManager(tk.Tk):
         if errs:
             if not messagebox.askyesno(
                 "Incomplete Config",
-                "Some required config fields are empty:\n\n" + "\n".join(errs) +
+                "Some config fields are empty or invalid:\n\n" + "\n".join(errs) +
                 "\n\nLaunch anyway?",
             ):
                 return
@@ -994,27 +1016,41 @@ class DragonwildsManager(tk.Tk):
         installer.write_config(self.prefs, self.log.append)
 
         self.log.append(f"Launching: {exe}")
-        creationflags = 0
         if os.name == "nt":
             creationflags = (
                 subprocess.DETACHED_PROCESS
                 | subprocess.CREATE_NEW_PROCESS_GROUP
                 | subprocess.CREATE_BREAKAWAY_FROM_JOB
             )
-        try:
+            command = [exe, "-log", "-NewConsole"]
+            try:
+                subprocess.Popen(command, creationflags=creationflags, close_fds=True)
+            except OSError:
+                creationflags &= ~subprocess.CREATE_BREAKAWAY_FROM_JOB
+                self.log.append(
+                    "Breakaway from the parent job was denied; server survival after manager exit may not be guaranteed.",
+                    "WARN",
+                )
+                subprocess.Popen(command, creationflags=creationflags, close_fds=True)
+        else:
+            if Path(exe).suffix.lower() == ".exe":
+                wine = shutil.which("wine")
+                if not wine:
+                    messagebox.showerror(
+                        "Wine Required",
+                        "This is a Windows server executable. Install Wine or select a native Linux server binary.",
+                    )
+                    return
+                command = [wine, exe, "-log", "-NewConsole"]
+            else:
+                command = [exe, "-log"]
             subprocess.Popen(
-                [exe, "-log", "-NewConsole"],
-                creationflags=creationflags,
+                command,
+                start_new_session=True,
                 close_fds=True,
-            )
-        except OSError:
-            if not creationflags or not (creationflags & subprocess.CREATE_BREAKAWAY_FROM_JOB):
-                raise
-            creationflags &= ~subprocess.CREATE_BREAKAWAY_FROM_JOB
-            subprocess.Popen(
-                [exe, "-log", "-NewConsole"],
-                creationflags=creationflags,
-                close_fds=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         self.log.append("Server launched -- monitoring for process...", "OK")
 
@@ -1026,7 +1062,7 @@ class DragonwildsManager(tk.Tk):
             if ok:
                 self.log.append("Server stopped.", "OK")
             else:
-                self.log.append("Could not stop server -- try killing it manually in Task Manager.", "ERROR")
+                self.log.append("Could not stop server -- try killing it manually in your system process manager.", "ERROR")
 
     def restart_server(self):
         if not self.monitor.is_online:
@@ -1101,14 +1137,14 @@ class DragonwildsManager(tk.Tk):
         exe = self.prefs.get("server_exe", "")
         folder = str(Path(exe).parent) if exe else self.prefs.get("install_dir", str(Path.home() / "DragonWildsServer"))
         if Path(folder).exists():
-            os.startfile(folder)
+            open_path(folder)
         else:
             messagebox.showinfo("Not Found", f"Folder not found:\n{folder}")
 
     def open_local_savegames(self):
         folder = installer.SAVEGAMES_DIR
         folder.mkdir(parents=True, exist_ok=True)
-        os.startfile(str(folder))
+        open_path(folder)
 
     def open_dedicated_savegames(self):
         exe = self.tab_setup.get_exe_override() or self.prefs.get("server_exe", "")
@@ -1126,12 +1162,15 @@ class DragonwildsManager(tk.Tk):
         for folder in installer.dedicated_savegames_paths_from_exe(exe):
             folder.mkdir(parents=True, exist_ok=True)
             if folder.exists():
-                os.startfile(str(folder))
+                open_path(folder)
                 return
 
         messagebox.showinfo("Not Found", "Could not determine the dedicated SaveGames folder.")
 
     def backup_savegames(self):
+        configured_dir = Path(
+            self.prefs.get("backup_dir") or str(Path.home() / "DragonWildsBackups")
+        ).expanduser()
         destination = filedialog.askdirectory(
             title="Choose backup folder",
             initialdir=str(configured_dir if configured_dir.is_dir() else Path.home()),
@@ -1154,35 +1193,6 @@ class DragonwildsManager(tk.Tk):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def run_full_setup(self):
-        errs = self.tab_config.validate()
-        if errs:
-            messagebox.showwarning("Missing Config", "\n".join(errs))
-        configured_dir = Path(
-            self.prefs.get("backup_dir") or str(Path.home() / "DragonWildsBackups")
-        ).expanduser()
-            return
-        cfg = self.tab_config.get_cfg()
-        install_dir = self.tab_setup.get_install_dir()
-
-        def _worker():
-            self._post_to_ui(self.tab_setup.start_progress)
-            self._post_to_ui(lambda: self.tab_setup.set_status("Running full setup...", P["warn"]))
-
-            steamcmd_dir = install_dir / "steamcmd"
-
-            # Step 1 - SteamCMD
-            self.log.append("=== STEP 1/4: SteamCMD ===")
-            if (steamcmd_dir / "steamcmd.exe").exists():
-                self.log.append("SteamCMD already present -- skipping.", "OK")
-            else:
-                ok = installer.download_steamcmd(steamcmd_dir, self.log.append)
-                if not ok:
-                    self._post_to_ui(lambda: self.tab_setup.stop_progress(0))
-                    self._post_to_ui(lambda: self.tab_setup.set_status("Failed at SteamCMD step.", P["error"]))
-                    return
-
-            # Step 2 - Server files
     def save_backup_settings(self):
         try:
             interval = int(self.tab_setup._backup_interval_var.get())
@@ -1215,6 +1225,33 @@ class DragonwildsManager(tk.Tk):
             "OK",
         )
 
+    def run_full_setup(self):
+        errs = self.tab_config.validate()
+        if errs:
+            messagebox.showwarning("Missing Config", "\n".join(errs))
+            return
+        cfg = self.tab_config.get_cfg()
+        port = self.tab_config.get_port()
+        install_dir = self.tab_setup.get_install_dir()
+
+        def _worker():
+            self._post_to_ui(self.tab_setup.start_progress)
+            self._post_to_ui(lambda: self.tab_setup.set_status("Running full setup...", P["warn"]))
+
+            steamcmd_dir = install_dir / "steamcmd"
+
+            # Step 1 - SteamCMD
+            self.log.append("=== STEP 1/4: SteamCMD ===")
+            if installer.steamcmd_executable(steamcmd_dir).exists():
+                self.log.append("SteamCMD already present -- skipping.", "OK")
+            else:
+                ok = installer.download_steamcmd(steamcmd_dir, self.log.append)
+                if not ok:
+                    self._post_to_ui(lambda: self.tab_setup.stop_progress(0))
+                    self._post_to_ui(lambda: self.tab_setup.set_status("Failed at SteamCMD step.", P["error"]))
+                    return
+
+            # Step 2 - Server files
             self.log.append("=== STEP 2/4: Server Files ===")
             ok = installer.install_server(install_dir, steamcmd_dir, self.log.append)
             if not ok:
@@ -1235,7 +1272,6 @@ class DragonwildsManager(tk.Tk):
 
             # Step 4 - Firewall
             self.log.append("=== STEP 4/4: Firewall ===")
-            port = int(cfg.get("port", 7777))
             installer.set_firewall(port, self.log.append)
 
             settings.save(self.prefs)
@@ -1246,8 +1282,10 @@ class DragonwildsManager(tk.Tk):
         threading.Thread(target=_worker, daemon=True).start()
 
     def run_firewall_only(self):
-        cfg  = self.tab_config.get_cfg()
-        port = int(cfg.get("port", 7777))
+        port = self.tab_config.get_port()
+        if port is None:
+            messagebox.showwarning("Invalid Port", "Server Port must be a number from 1 to 65535.")
+            return
 
         def _worker():
             installer.set_firewall(port, self.log.append)
@@ -1302,6 +1340,8 @@ class DragonwildsManager(tk.Tk):
             "Delete Server Files",
             "This will permanently delete the configured server install folder and all files inside it.\n\n"
             f"Folder:\n{install_dir}\n\n"
+            "This includes any dedicated-server world saves stored inside it. "
+            "Use Back Up SaveGames first if you want to keep them.\n\n"
             "Do you want to continue?",
             icon="warning",
         ):
@@ -1342,6 +1382,7 @@ class DragonwildsManager(tk.Tk):
 
     def _on_close(self):
         self._closing = True
+        self._backup_stop.set()
         self.prefs["window_x"] = self.winfo_x()
         self.prefs["window_y"] = self.winfo_y()
         settings.save(self.prefs)
@@ -1356,4 +1397,3 @@ class DragonwildsManager(tk.Tk):
 if __name__ == "__main__":
     app = DragonwildsManager()
     app.mainloop()
-        self._backup_stop.set()

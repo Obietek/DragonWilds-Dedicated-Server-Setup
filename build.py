@@ -1,6 +1,5 @@
 """
-build.py
-Run this once to produce dist/DragonwildsManager.exe
+Build the manager for the current operating system.
 
 Requirements:
     pip install pyinstaller psutil
@@ -91,38 +90,41 @@ def main():
     )
 
     # PyInstaller command
+    is_windows = sys.platform == "win32"
+    executable_name = "DragonwildsManager.exe" if is_windows else "DragonwildsManager"
     print("\n[2/3] Building executable with PyInstaller...")
     cmd = [
         sys.executable, "-m", "PyInstaller",
-        "--onefile",                          # single exe
-        "--noconsole",                        # no console window
+        "--onefile",
         "--name", "DragonwildsManager",
-        "--add-data", f"{HERE / 'core'};core",  # bundle core package
+        "--add-data", f"{HERE / 'core'}{os.pathsep}core",
         str(HERE / "main.py"),
     ]
+    if is_windows:
+        cmd.insert(4, "--noconsole")
 
     result = subprocess.run(cmd, cwd=str(HERE))
 
     if result.returncode == 0:
-        exe_path = HERE / "dist" / "DragonwildsManager.exe"
-        if not _sign_exe(exe_path):
+        exe_path = HERE / "dist" / executable_name
+        if is_windows and not _sign_exe(exe_path):
             sys.exit(1)
 
         print("\n" + "=" * 60)
         print("  BUILD SUCCESSFUL!")
-        print(f"  Exe: {exe_path}")
+        print(f"  Executable: {exe_path}")
         print("=" * 60)
-        print("\nTo install:")
-        print("  1. Copy DragonwildsManager.exe anywhere you like")
-        print("     (e.g. C:\\Program Files\\DragonwildsManager\\)")
-        print("  2. Right-click -> Create shortcut -> drag to Desktop")
-        print("  3. Always run as Administrator for firewall features")
-        print("\nOptional signing environment variables:")
-        print("  SIGNTOOL_PATH           Path to signtool.exe")
-        print("  CODESIGN_CERT_SHA1      Thumbprint of a cert in the Windows cert store")
-        print("  CODESIGN_PFX_PATH       Path to a .pfx file")
-        print("  CODESIGN_PFX_PASSWORD   Password for the .pfx file")
-        print(f"  CODESIGN_TIMESTAMP_URL  RFC 3161 timestamp URL (default: {DEFAULT_TIMESTAMP_URL})")
+        if is_windows:
+            print("\nRun DragonwildsManager.exe from the dist directory.")
+            print("Run as Administrator to configure Windows Firewall rules.")
+            print("\nOptional signing environment variables:")
+            print("  SIGNTOOL_PATH           Path to signtool.exe")
+            print("  CODESIGN_CERT_SHA1      Thumbprint of a cert in the Windows cert store")
+            print("  CODESIGN_PFX_PATH       Path to a .pfx file")
+            print("  CODESIGN_PFX_PASSWORD   Password for the .pfx file")
+            print(f"  CODESIGN_TIMESTAMP_URL  RFC 3161 timestamp URL (default: {DEFAULT_TIMESTAMP_URL})")
+        else:
+            print("\nRun the executable with: ./dist/DragonwildsManager")
         print()
     else:
         print("\nBUILD FAILED -- check the output above for errors.")

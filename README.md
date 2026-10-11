@@ -1,8 +1,8 @@
 # Dragonwilds Server Manager
 
-`DragonwildsManager.exe` is a Windows desktop app for installing, configuring, updating, launching, and monitoring a RuneScape: Dragonwilds dedicated server.
+Dragonwilds Server Manager is a Windows and Linux desktop app for configuring, updating, launching, and monitoring a RuneScape: Dragonwilds dedicated server.
 
-It is built from this project with PyInstaller and outputs a single executable at `dist\DragonwildsManager.exe`.
+Build it on the target operating system with PyInstaller. Windows produces `dist/DragonwildsManager.exe`; Linux produces `dist/DragonwildsManager`.
 
 ## Screenshots
 
@@ -29,23 +29,24 @@ The app provides a simple GUI for common dedicated-server tasks:
 - Install SteamCMD
 - Download or update the Dragonwilds dedicated server files
 - Edit and save `DedicatedServer.ini`
-- Create Windows Firewall UDP rules
+- Create Windows Firewall, UFW, or firewalld UDP rules
 - Start and stop the dedicated server
 - Monitor server status, PID, uptime, and live app log output
 - Delete the configured server install folder
 
 ## Build Output
 
-Run:
+Run on Windows or Linux:
 
-```powershell
+```sh
 python build.py
 ```
 
-This creates:
+This creates the platform-specific executable:
 
 ```text
-dist\DragonwildsManager.exe
+Windows: dist/DragonwildsManager.exe
+Linux:   dist/DragonwildsManager
 ```
 
 The build script also installs the required Python packages:
@@ -60,7 +61,23 @@ The build script also installs the required Python packages:
 3. Run `DragonwildsManager.exe`.
 4. For firewall changes, run it as Administrator.
 
-The executable is built with `--noconsole`, so it launches as a normal Windows app without a terminal window.
+The Windows executable is built without a console window. Linux builds can be launched from a terminal or desktop shortcut.
+
+## Linux
+
+On Debian or Ubuntu, install Tkinter and common SteamCMD runtime libraries before running or building:
+
+```sh
+sudo apt install python3-tk lib32gcc-s1 lib32stdc++6
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+python main.py
+```
+
+To build a standalone Linux executable, run `python3 build.py` and launch `./dist/DragonwildsManager`. Linux firewall rules use UFW or firewalld when installed; configuring them requires suitable privileges. You can also configure UDP manually.
+
+The app downloads the Linux SteamCMD client on Linux. The dedicated-server app must provide a Linux server binary for native installation. If you have a Windows server executable, install Wine and select that executable in Setup; the manager will launch it through Wine. This project has not verified that Steam provides a native Linux depot for this server.
 
 ## Windows Security Warnings
 
@@ -116,7 +133,8 @@ Buttons:
 
 The app writes config data to:
 
-- `%LOCALAPPDATA%\RSDragonwilds\Saved\Config\WindowsServer\DedicatedServer.ini`
+- `%LOCALAPPDATA%\RSDragonwilds\Saved\Config\WindowsServer\DedicatedServer.ini` on Windows
+- `$XDG_CONFIG_HOME/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` on Linux (defaults to `~/.config`)
 - `<server install>\RSDragonwilds\Saved\Config\WindowsServer\DedicatedServer.ini`
 - `<server install>\Saved\Config\WindowsServer\DedicatedServer.ini`
 
@@ -127,12 +145,12 @@ This tab handles installation and maintenance.
 Fields:
 
 - `Install Folder`: where server files and SteamCMD will live
-- `Existing Server Exe`: lets you point the app to an existing `RSDragonwildsServer.exe`
+- `Existing Server Exe`: lets you point the app to an existing server executable
 
 Buttons:
 
 - `Full Setup`: downloads SteamCMD, installs server files, writes config, and applies firewall rules
-- `Firewall Only`: creates Windows Firewall UDP allow rules for the configured port
+- `Firewall Only`: creates Windows Firewall, UFW, or firewalld UDP allow rules for the configured port
 - `Save Config Only`: writes config without reinstalling anything
 - `Update Server Files`: updates the dedicated server through SteamCMD
 - `Delete Server Files`: removes the configured install directory after confirmation
@@ -141,7 +159,7 @@ Buttons:
 
 Open `Setup` > `Automatic Backups` to configure scheduled SaveGames backups. Automatic backups are enabled by default and run every 30 minutes after the server has been online for that interval. The manager must remain open; if the server goes offline, the timer starts over when it comes back online.
 
-Backups are stored in the `DragonWildsBackups` folder in your home directory by default, outside the server install folder. Each backup gets its own timestamped `DragonwildsBackup-*` folder. The default retention is 7 days; expired backups are removed when the manager starts and about once an hour while it is open. Change the backup folder, interval, retention period, or enablement in this section, then select `Save Backup Settings`. The manual `Back Up SaveGames` action remains available independently.
+Backups are stored in the `DragonWildsBackups` folder in your home directory by default, outside the server install folder. Each backup gets its own timestamped `DragonwildsBackup-*` folder. The default retention is 7 days; expired backups are removed when the manager starts and about once an hour while it is open, but the newest 3 backups are always kept regardless of age. Because the server may be saving while a backup runs, the manager waits for the SaveGames files to be untouched for a few seconds, re-copies any file that changes or is locked during the copy, and only gives the backup its final name once every file copied cleanly. A folder ending in `.partial` is an unfinished backup. Change the backup folder, interval, retention period, or enablement in this section, then select `Save Backup Settings`. The manual `Back Up SaveGames` action remains available independently.
 
 ## Status Tab
 
@@ -158,18 +176,18 @@ It shows:
 
 Buttons:
 
-- `Start Server`: launches `RSDragonwildsServer.exe`
+- `Start Server`: launches the configured server executable
 - `Stop Server`: terminates the detected server process
-- `Open Server Folder`: opens the install folder in Windows Explorer
+- `Open Server Folder`: opens the install folder in the system file manager
 
 ## How It Works
 
 At startup, the app:
 
-- loads saved app settings from `%APPDATA%\DragonwildsManager\settings.json`
+- loads saved app settings from the platform's normal per-user config directory
 - loads server config values from existing `DedicatedServer.ini` files
 - restores the last window position
-- starts a background monitor that watches for `RSDragonwildsServer.exe`
+- starts a background monitor that watches for the Dragonwilds server process
 
 When you launch the server, the app:
 
@@ -183,9 +201,11 @@ When you launch the server, the app:
 
 Important locations used by the app:
 
-- App settings: `%APPDATA%\DragonwildsManager\settings.json`
-- Local config: `%LOCALAPPDATA%\RSDragonwilds\Saved\Config\WindowsServer\DedicatedServer.ini`
-- Built exe: `dist\DragonwildsManager.exe`
+- Windows settings: `%APPDATA%\DragonwildsManager\settings.json`
+- Linux settings: `$XDG_CONFIG_HOME/DragonwildsManager/settings.json` (defaults to `~/.config`)
+- Windows config: `%LOCALAPPDATA%\RSDragonwilds\Saved\Config\WindowsServer\DedicatedServer.ini`
+- Linux config: `$XDG_CONFIG_HOME/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`
+- Build output: `dist/DragonwildsManager.exe` on Windows or `dist/DragonwildsManager` on Linux
 - Default install folder: `%USERPROFILE%\DragonWildsServer`
 
 ## Notes
@@ -199,13 +219,13 @@ Important locations used by the app:
 
 Run from source:
 
-```powershell
+```sh
 python main.py
 ```
 
 Build the executable:
 
-```powershell
+```sh
 python build.py
 ```
 
@@ -213,11 +233,12 @@ python build.py
 
 The repo includes a GitHub Actions workflow at `.github/workflows/release.yml`.
 
-It will:
+It builds and publishes:
 
-- build `dist\DragonwildsManager.exe` on Windows
-- upload the executable as a workflow artifact
-- attach the executable to a GitHub Release when you push a tag like `v1.0.0`
+- `DragonwildsManager.exe` on Windows
+- `DragonwildsManager` on Linux
+- upload both executables as workflow artifacts
+- attach both executables to a GitHub Release when you push a tag like `v1.0.0`
 
 To publish a release from GitHub:
 
@@ -230,7 +251,7 @@ You can also run the workflow manually from the GitHub Actions tab to generate a
 
 ## Release Signing
 
-`build.py` can automatically sign `dist\DragonwildsManager.exe` when signing credentials are provided through environment variables.
+On Windows, `build.py` can automatically sign `dist\DragonwildsManager.exe` when signing credentials are provided through environment variables. Linux builds are not code-signed by this script.
 
 Supported variables:
 

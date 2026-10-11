@@ -1,17 +1,18 @@
 """
 core/monitor.py
-Watches for a running RSDragonwilds.exe process and tracks uptime.
+Watches for a Dragonwilds dedicated-server process and tracks uptime.
 """
 
 import re
 import psutil
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
 
-SERVER_EXE = "RSDragonwildsServer.exe"
+SERVER_PROCESS_PREFIX = "rsdragonwildsserver"
 LOG_FILE = "RSDragonwilds.log"
 JOIN_RE = re.compile(r"Join succeeded:\s*(.+)")
 LEAVE_RE = re.compile(r"Player Removed from session \[[^\]]+\]-\[(.+)\]")
@@ -64,7 +65,10 @@ class ServerMonitor:
     def _poll(self):
         for proc in psutil.process_iter(["pid", "name", "exe", "create_time"]):
             try:
-                if proc.info["name"] and SERVER_EXE.lower() in proc.info["name"].lower():
+                process_name = (proc.info.get("name") or "").lower()
+                executable = Path(proc.info.get("exe") or "").name.lower()
+                if (SERVER_PROCESS_PREFIX in process_name
+                        or SERVER_PROCESS_PREFIX in executable):
                     if not self.is_online:
                         self.start_time = datetime.fromtimestamp(proc.info["create_time"])
                         self.exe_path   = proc.info.get("exe", "")
@@ -154,19 +158,35 @@ class ServerMonitor:
         """Terminate the server process tree. Returns True on success."""
         if self.pid is None:
             return False
-        try:
-            result = subprocess.run(
-                ["taskkill", "/PID", str(self.pid), "/T", "/F"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode == 0:
-                return True
+        if sys.platform == "win32":
+            try:
+                result = subprocess.run(
+                    ["taskkill", "/PID", str(self.pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                if result.returncode == 0:
+                    return True
+            except subprocess.SubprocessError:
+                pass
 
-            proc = psutil.Process(self.pid)
-            proc.terminate()
-            proc.wait(timeout=5)
-            return True
-        except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied, subprocess.SubprocessError):
+        try:
+            process = psutil.Process(self.pid)
+            processes = process.children(recursive=True) + [process]
+            for child in processes[:-1]:
+                try:
+                    child.terminate()
+                except psutil.NoSuchProcess:
+                    continue
+            process.terminate()
+            _, alive = psutil.wait_procs(processes, timeout=5)
+            for remaining in alive:
+                try:
+                    remaining.kill()
+                except psutil.NoSuchProcess:
+                    continue
+            _, alive = psutil.wait_procs(alive, timeout=5)
+            return not alive
+        except (psutil.NoSuchProcess, psutil.TimeoutExpired, psutil.AccessDenied):
             return False
