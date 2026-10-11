@@ -137,6 +137,12 @@ Buttons:
 - `Update Server Files`: updates the dedicated server through SteamCMD
 - `Delete Server Files`: removes the configured install directory after confirmation
 
+### Automatic Backups
+
+Open `Setup` > `Automatic Backups` to configure scheduled SaveGames backups. Automatic backups are enabled by default and run every 30 minutes after the server has been online for that interval. The manager must remain open; if the server goes offline, the timer starts over when it comes back online.
+
+Backups are stored in the `DragonWildsBackups` folder in your home directory by default, outside the server install folder. Each backup gets its own timestamped `DragonwildsBackup-*` folder. The default retention is 7 days; expired backups are removed when the manager starts and about once an hour while it is open. Change the backup folder, interval, retention period, or enablement in this section, then select `Save Backup Settings`. The manual `Back Up SaveGames` action remains available independently.
+
 ## Status Tab
 
 This tab is used after setup is complete.
@@ -155,10 +161,6 @@ Buttons:
 - `Start Server`: launches `RSDragonwildsServer.exe`
 - `Stop Server`: terminates the detected server process
 - `Open Server Folder`: opens the install folder in Windows Explorer
-### Automatic Backups
-
-The Setup tab can automatically back up SaveGames every 30 minutes by default, as long as the manager is open and the server is online. Backups are stored in a `DragonWildsBackups` folder in your home directory, outside the server install folder. Choose a different folder, change the interval, or set how many days to keep backups; expired timestamped backups are deleted automatically. Automatic backups are enabled by default and can be disabled without affecting manual backups.
-
 
 ## How It Works
 
