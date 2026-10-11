@@ -155,6 +155,10 @@ Buttons:
 - `Start Server`: launches `RSDragonwildsServer.exe`
 - `Stop Server`: terminates the detected server process
 - `Open Server Folder`: opens the install folder in Windows Explorer
+### Automatic Backups
+
+The Setup tab can automatically back up SaveGames every 30 minutes by default, as long as the manager is open and the server is online. Backups are stored in a `DragonWildsBackups` folder in your home directory, outside the server install folder. Choose a different folder, change the interval, or set how many days to keep backups; expired timestamped backups are deleted automatically. Automatic backups are enabled by default and can be disabled without affecting manual backups.
+
 
 ## How It Works
 

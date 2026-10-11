@@ -9,7 +9,7 @@ import subprocess
 import textwrap
 import urllib.request
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
@@ -190,13 +190,6 @@ def dedicated_savegames_paths_from_exe(exe_path: str) -> list[Path]:
 
 
 def backup_savegames(destination_root: Path, exe_path: str, log) -> bool:
-    destination_root = Path(destination_root)
-    destination_root.mkdir(parents=True, exist_ok=True)
-
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    backup_root = destination_root / f"DragonwildsBackup-{stamp}"
-    backup_root.mkdir(parents=True, exist_ok=True)
-
     sources: list[tuple[str, Path]] = []
     if SAVEGAMES_DIR.exists():
         sources.append(("LocalSaveGames", SAVEGAMES_DIR))
@@ -212,10 +205,26 @@ def backup_savegames(destination_root: Path, exe_path: str, log) -> bool:
         log("No SaveGames folders were found to back up.", "WARN")
         return False
 
-    for label, src in sources:
-        dest = backup_root / label
-        shutil.copytree(src, dest, dirs_exist_ok=True)
-        log(f"Backed up {src} to {dest}", "OK")
+    destination_root = Path(destination_root)
+    backup_root = None
+    try:
+        destination_root.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        backup_root = destination_root / f"DragonwildsBackup-{stamp}"
+        if backup_root.exists():
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            backup_root = destination_root / f"DragonwildsBackup-{stamp}"
+        backup_root.mkdir()
+
+        for label, src in sources:
+            dest = backup_root / label
+            shutil.copytree(src, dest)
+            log(f"Backed up {src} to {dest}", "OK")
+    except OSError as exc:
+        if backup_root is not None:
+            shutil.rmtree(backup_root, ignore_errors=True)
+        log(f"SaveGames backup failed: {exc}", "ERROR")
+        return False
 
     log(f"Backup complete: {backup_root}", "OK")
     return True
@@ -253,6 +262,34 @@ def write_config(cfg: dict, log) -> None:
         AdminPassword={admin_pass}
         WorldPassword={world_pass}
         Port={port}
+def prune_savegame_backups(destination_root: Path, retention_days: int, log) -> int:
+    if retention_days < 1 or not destination_root.is_dir():
+        return 0
+
+    cutoff = datetime.now() - timedelta(days=retention_days)
+    deleted = 0
+    for backup_root in destination_root.glob("DragonwildsBackup-*"):
+        if not backup_root.is_dir():
+            continue
+        try:
+            stamp = backup_root.name.removeprefix("DragonwildsBackup-")
+            try:
+                created_at = datetime.strptime(stamp, "%Y%m%d-%H%M%S")
+            except ValueError:
+                created_at = datetime.strptime(stamp, "%Y%m%d-%H%M%S-%f")
+        except ValueError:
+            continue
+        if created_at >= cutoff:
+            continue
+        try:
+            shutil.rmtree(backup_root)
+            log(f"Deleted expired backup: {backup_root}", "INFO")
+            deleted += 1
+        except OSError as exc:
+            log(f"Could not delete expired backup {backup_root}: {exc}", "WARN")
+    return deleted
+
+
     """)
 
     # Primary config location (LocalAppData)

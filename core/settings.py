@@ -28,6 +28,10 @@ def load() -> dict:
     _APP_DIR.mkdir(parents=True, exist_ok=True)
     if _SETTINGS.exists():
         try:
+    "backup_enabled": True,
+    "backup_interval_minutes": 30,
+    "backup_retention_days": 7,
+    "backup_dir":    str(Path.home() / "DragonWildsBackups"),
             data = json.loads(_SETTINGS.read_text(encoding="utf-8"))
             # fill in any missing keys from DEFAULTS
             for k, v in DEFAULTS.items():

@@ -542,6 +542,60 @@ class SetupTab(ScrollableTab):
         self._status_lbl = _label(self.body, "Ready.", fg=P["subtext"], bg=P["panel"])
         self._status_lbl.pack(anchor="w", padx=24)
 
+        tk.Frame(self.body, bg=P["sep"], height=1).pack(fill="x", padx=24, pady=(12, 4))
+        _label(self.body, "Automatic Backups", font=("Segoe UI", 10, "bold"),
+               bg=P["panel"], fg=P["accent"]).pack(anchor="w", **pad)
+
+        self._backup_enabled_var = tk.BooleanVar(
+            value=self.app.prefs.get("backup_enabled", True)
+        )
+        tk.Checkbutton(
+            self.body,
+            text="Enable automatic backups while the manager is open and the server is online",
+            variable=self._backup_enabled_var,
+            bg=P["panel"],
+            fg=P["text"],
+            activebackground=P["panel"],
+            activeforeground=P["text"],
+            selectcolor=P["input_bg"],
+        ).pack(anchor="w", padx=24, pady=4)
+
+        backup_path_row = tk.Frame(self.body, bg=P["panel"])
+        backup_path_row.pack(fill="x", padx=24, pady=4)
+        _label(backup_path_row, "Backup Folder:", fg=P["subtext"], width=18).pack(side="left")
+        self._backup_dir_var = tk.StringVar(
+            value=self.app.prefs.get("backup_dir", str(Path.home() / "DragonWildsBackups"))
+        )
+        _entry(backup_path_row, self._backup_dir_var, width=40).pack(side="left", padx=(4, 6))
+        _styled_button(backup_path_row, "Browse", self._browse_backup_dir,
+                       bg=P["panel2"], fg=P["text"]).pack(side="left")
+
+        backup_options = tk.Frame(self.body, bg=P["panel"])
+        backup_options.pack(fill="x", padx=24, pady=(4, 8))
+        _label(backup_options, "Every (minutes):", fg=P["subtext"]).pack(side="left")
+        self._backup_interval_var = tk.StringVar(
+            value=str(self.app.prefs.get("backup_interval_minutes", 30))
+        )
+        tk.Spinbox(
+            backup_options, from_=1, to=1440, width=5,
+            textvariable=self._backup_interval_var,
+            bg=P["input_bg"], fg=P["text"], buttonbackground=P["panel_hi"],
+            relief="flat",
+        ).pack(side="left", padx=(6, 16))
+        _label(backup_options, "Delete after (days):", fg=P["subtext"]).pack(side="left")
+        self._backup_retention_var = tk.StringVar(
+            value=str(self.app.prefs.get("backup_retention_days", 7))
+        )
+        tk.Spinbox(
+            backup_options, from_=1, to=3650, width=5,
+            textvariable=self._backup_retention_var,
+            bg=P["input_bg"], fg=P["text"], buttonbackground=P["panel_hi"],
+            relief="flat",
+        ).pack(side="left", padx=(6, 16))
+        _styled_button(backup_options, "Save Backup Settings",
+                       self.app.save_backup_settings,
+                       bg=P["panel2"], fg=P["text"]).pack(side="left")
+
     def _browse_install(self):
         d = filedialog.askdirectory(title="Choose install folder",
                                     initialdir=self._install_dir_var.get())
@@ -573,6 +627,15 @@ class SetupTab(ScrollableTab):
         self.progress.stop()
         self.progress.configure(mode="determinate", value=pct)
         self._btn_full.configure(state="normal", bg=P["btn_bg"])
+    def _browse_backup_dir(self):
+        current = Path(self._backup_dir_var.get()).expanduser()
+        destination = filedialog.askdirectory(
+            title="Choose backup folder",
+            initialdir=str(current if current.is_dir() else Path.home()),
+        )
+        if destination:
+            self._backup_dir_var.set(destination)
+
 
     def get_install_dir(self) -> Path:
         return Path(self._install_dir_var.get())
@@ -743,6 +806,8 @@ class DragonwildsManager(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── UI ────────────────────────────────────────────────────────────────────
+        self._backup_stop = threading.Event()
+        self._backup_thread = None
 
     def _build_ui(self):
         # Title bar
@@ -822,8 +887,56 @@ class DragonwildsManager(tk.Tk):
         if self._closing:
             return
         self.after(1000, self._ui_tick)
+        self._backup_thread = threading.Thread(target=self._backup_loop, daemon=True)
+        self._backup_thread.start()
         while True:
             try:
+    def _backup_loop(self):
+        next_backup_at = None
+        next_cleanup_at = 0
+        previous_settings = None
+
+        while not self._backup_stop.is_set():
+            enabled = bool(self.prefs.get("backup_enabled", True))
+            try:
+                interval = int(self.prefs.get("backup_interval_minutes", 30))
+                retention = int(self.prefs.get("backup_retention_days", 7))
+            except (TypeError, ValueError):
+                interval, retention = 30, 7
+            interval = min(max(interval, 1), 1440)
+            retention = min(max(retention, 1), 3650)
+            backup_dir_value = self.prefs.get("backup_dir") or str(Path.home() / "DragonWildsBackups")
+            backup_dir = Path(str(backup_dir_value)).expanduser()
+            current_settings = (enabled, interval, retention, backup_dir)
+            now = time.monotonic()
+
+            if current_settings != previous_settings:
+                next_backup_at = None
+                next_cleanup_at = 0
+                previous_settings = current_settings
+
+            if now >= next_cleanup_at:
+                try:
+                    installer.prune_savegame_backups(backup_dir, retention, self.log.append)
+                except OSError as exc:
+                    self.log.append(f"Backup cleanup failed: {exc}", "WARN")
+                next_cleanup_at = now + 3600
+
+            if not enabled or not self.monitor.is_online:
+                next_backup_at = None
+            elif next_backup_at is None:
+                next_backup_at = now + interval * 60
+            elif now >= next_backup_at:
+                next_backup_at = now + interval * 60
+                exe = self.monitor.exe_path or self.prefs.get("server_exe", "")
+                self.log.append("Starting scheduled SaveGames backup...")
+                try:
+                    installer.backup_savegames(backup_dir, exe, self.log.append)
+                except Exception as exc:
+                    self.log.append(f"Scheduled SaveGames backup failed: {exc}", "ERROR")
+
+            self._backup_stop.wait(1)
+
                 callback = self._ui_tasks.get_nowait()
             except queue.Empty:
                 break
@@ -1021,7 +1134,7 @@ class DragonwildsManager(tk.Tk):
     def backup_savegames(self):
         destination = filedialog.askdirectory(
             title="Choose backup folder",
-            initialdir=str(Path.home()),
+            initialdir=str(configured_dir if configured_dir.is_dir() else Path.home()),
         )
         if not destination:
             return
@@ -1045,6 +1158,9 @@ class DragonwildsManager(tk.Tk):
         errs = self.tab_config.validate()
         if errs:
             messagebox.showwarning("Missing Config", "\n".join(errs))
+        configured_dir = Path(
+            self.prefs.get("backup_dir") or str(Path.home() / "DragonWildsBackups")
+        ).expanduser()
             return
         cfg = self.tab_config.get_cfg()
         install_dir = self.tab_setup.get_install_dir()
@@ -1067,6 +1183,38 @@ class DragonwildsManager(tk.Tk):
                     return
 
             # Step 2 - Server files
+    def save_backup_settings(self):
+        try:
+            interval = int(self.tab_setup._backup_interval_var.get())
+            retention = int(self.tab_setup._backup_retention_var.get())
+        except ValueError:
+            messagebox.showwarning("Invalid Backup Settings", "Enter whole numbers for the interval and retention days.")
+            return
+
+        if not 1 <= interval <= 1440 or not 1 <= retention <= 3650:
+            messagebox.showwarning(
+                "Invalid Backup Settings",
+                "Interval must be 1-1440 minutes and retention must be 1-3650 days.",
+            )
+            return
+
+        backup_dir = self.tab_setup._backup_dir_var.get().strip()
+        if not backup_dir:
+            messagebox.showwarning("Invalid Backup Folder", "Choose a folder for server backups.")
+            return
+
+        self.prefs.update({
+            "backup_enabled": self.tab_setup._backup_enabled_var.get(),
+            "backup_interval_minutes": interval,
+            "backup_retention_days": retention,
+            "backup_dir": str(Path(backup_dir).expanduser()),
+        })
+        settings.save(self.prefs)
+        self.log.append(
+            f"Backup settings saved: every {interval} minutes, keep {retention} days.",
+            "OK",
+        )
+
             self.log.append("=== STEP 2/4: Server Files ===")
             ok = installer.install_server(install_dir, steamcmd_dir, self.log.append)
             if not ok:
@@ -1208,3 +1356,4 @@ class DragonwildsManager(tk.Tk):
 if __name__ == "__main__":
     app = DragonwildsManager()
     app.mainloop()
+        self._backup_stop.set()
