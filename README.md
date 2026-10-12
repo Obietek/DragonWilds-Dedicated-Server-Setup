@@ -77,7 +77,9 @@ python main.py
 
 To build a standalone Linux executable, run `python3 build.py` and launch `./dist/DragonwildsManager`. Linux firewall rules use UFW or firewalld when installed; configuring them requires suitable privileges. You can also configure UDP manually.
 
-The app downloads the Linux SteamCMD client on Linux. The dedicated-server app must provide a Linux server binary for native installation. If you have a Windows server executable, install Wine and select that executable in Setup; the manager will launch it through Wine. This project has not verified that Steam provides a native Linux depot for this server.
+The app downloads the Linux SteamCMD client on Linux and installs the native Linux server that Steam provides. The manager starts it through the `RSDragonwildsServer.sh` script in the install folder. The Linux server keeps its config, saves, and logs inside the install folder under `RSDragonwilds/Saved`, so nothing is written to `~/.config` for the server itself. If you have a Windows server executable instead, install Wine and select that executable in Setup; the manager will launch it through Wine.
+
+SteamCMD and the server are x86 programs. On ARM64 Linux the server runs under an x86 emulator such as FEX, but SteamCMD's own launcher script does not support ARM hosts, so `Full Setup` and `Update Server Files` do not work there.
 
 ## Windows Security Warnings
 
@@ -134,9 +136,9 @@ Buttons:
 The app writes config data to:
 
 - `%LOCALAPPDATA%\RSDragonwilds\Saved\Config\WindowsServer\DedicatedServer.ini` on Windows
-- `$XDG_CONFIG_HOME/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` on Linux (defaults to `~/.config`)
 - `<server install>\RSDragonwilds\Saved\Config\WindowsServer\DedicatedServer.ini`
 - `<server install>\Saved\Config\WindowsServer\DedicatedServer.ini`
+- `<server install>/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini` on Linux (the only location there; it is written once the server is installed or selected)
 
 ## Setup Tab
 
@@ -204,7 +206,8 @@ Important locations used by the app:
 - Windows settings: `%APPDATA%\DragonwildsManager\settings.json`
 - Linux settings: `$XDG_CONFIG_HOME/DragonwildsManager/settings.json` (defaults to `~/.config`)
 - Windows config: `%LOCALAPPDATA%\RSDragonwilds\Saved\Config\WindowsServer\DedicatedServer.ini`
-- Linux config: `$XDG_CONFIG_HOME/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`
+- Linux config: `<server install>/RSDragonwilds/Saved/Config/LinuxServer/DedicatedServer.ini`
+- Linux server launcher: `<server install>/RSDragonwildsServer.sh`
 - Build output: `dist/DragonwildsManager.exe` on Windows or `dist/DragonwildsManager` on Linux
 - Default install folder: `%USERPROFILE%\DragonWildsServer`
 

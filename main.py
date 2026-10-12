@@ -746,8 +746,11 @@ class ConfigTab(ScrollableTab):
         for key, var in self._vars.items():
             self.app.prefs[key] = var.get().strip()
         settings.save(self.app.prefs)
-        installer.write_config(self.app.prefs, self.app.log.append)
-        self._saved_lbl.configure(text="Saved and written to DedicatedServer.ini")
+        written = installer.write_config(self.app.prefs, self.app.log.append)
+        self._saved_lbl.configure(
+            text="Saved and written to DedicatedServer.ini" if written
+            else "Saved. DedicatedServer.ini will be written once the server is installed."
+        )
         self.after(3000, lambda: self._saved_lbl.configure(text=""))
 
     def _reload(self):

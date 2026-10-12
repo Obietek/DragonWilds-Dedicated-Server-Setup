@@ -29,7 +29,9 @@ if IS_WINDOWS:
     CONFIG_PLATFORM = "WindowsServer"
     SAVE_APP = LOCAL_APP
 elif IS_LINUX:
-    LOCAL_APP = Path(os.getenv("XDG_CONFIG_HOME", Path.home() / ".config"))
+    # The Linux server only reads the config inside its install folder
+    # (<root>/RSDragonwilds/Saved), so there is no per-user config file.
+    LOCAL_APP = None
     CONFIG_PLATFORM = "LinuxServer"
     SAVE_APP = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
 else:
@@ -37,8 +39,11 @@ else:
     CONFIG_PLATFORM = "LinuxServer"
     SAVE_APP = LOCAL_APP
 
-CONFIG_DIR = LOCAL_APP / "RSDragonwilds" / "Saved" / "Config" / CONFIG_PLATFORM
-CONFIG_FILE = CONFIG_DIR / "DedicatedServer.ini"
+if LOCAL_APP is None:
+    CONFIG_DIR = CONFIG_FILE = None
+else:
+    CONFIG_DIR = LOCAL_APP / "RSDragonwilds" / "Saved" / "Config" / CONFIG_PLATFORM
+    CONFIG_FILE = CONFIG_DIR / "DedicatedServer.ini"
 SAVEGAMES_DIR = SAVE_APP / "RSDragonwilds" / "Saved" / "SaveGames"
 
 BACKUP_QUIET_SECONDS = 5     # saves must be untouched this long before a backup starts
@@ -130,8 +135,11 @@ def install_server(install_dir: Path, steamcmd_dir: Path, log) -> bool:
 
 
 def find_server_exe(install_dir: Path):
-    """Find a supported server binary beneath the install directory."""
-    names = (["RSDragonwildsServer-Linux-Shipping", "RSDragonwildsServer", "RSDragonwildsServer.exe"]
+    """Find a supported server launcher or binary beneath the install directory."""
+    # On Linux the supported launch target is the RSDragonwildsServer.sh script in the
+    # install root; it starts the shipping binary with the arguments it needs.
+    names = (["RSDragonwildsServer.sh", "RSDragonwildsServer-Linux-Shipping",
+              "RSDragonwildsServer", "RSDragonwildsServer.exe"]
              if IS_LINUX else ["RSDragonwildsServer.exe"])
     roots = [
         install_dir / "steamcmd" / "steamapps" / "common" / STEAM_APP_DIR,
@@ -221,32 +229,54 @@ def _list_dir(path: Path, log, depth: int = 0, max_depth: int = 3):
 # Config
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _dedicated_config_paths_from_exe(exe_path: str) -> list[Path]:
-    exe_path = str(exe_path).strip()
+def server_root_from_exe(exe_path):
+    """Return the server install root for a launcher or shipping binary path, or None.
+
+    The launcher (RSDragonwildsServer.exe or RSDragonwildsServer.sh) sits in the root;
+    the binary it starts lives in <root>/RSDragonwilds/Binaries/<Platform>/.
+    """
+    exe_path = str(exe_path or "").strip()
     if not exe_path:
-        return []
+        return None
     p = Path(exe_path)
     if not p.is_file():
+        return None
+    binaries_dir = p.parent.parent
+    if (binaries_dir.name.lower() == "binaries"
+            and binaries_dir.parent.name.lower() == "rsdragonwilds"):
+        return binaries_dir.parent.parent
+    return p.parent
+
+
+def _dedicated_config_paths_from_exe(exe_path: str) -> list[Path]:
+    base = server_root_from_exe(exe_path)
+    if base is None:
         return []
-    base = p.parent
-    config_platform = "WindowsServer" if p.suffix.lower() == ".exe" else CONFIG_PLATFORM
-    return [
-        base / "RSDragonwilds" / "Saved" / "Config" / config_platform / "DedicatedServer.ini",
-        base / "Saved" / "Config" / config_platform / "DedicatedServer.ini",
-    ]
+    is_windows_exe = Path(str(exe_path).strip()).suffix.lower() == ".exe"
+    config_platform = "WindowsServer" if is_windows_exe else CONFIG_PLATFORM
+    paths = [base / "RSDragonwilds" / "Saved" / "Config" / config_platform / "DedicatedServer.ini"]
+    if config_platform == "WindowsServer":
+        paths.append(base / "Saved" / "Config" / config_platform / "DedicatedServer.ini")
+    return paths
 
 
 def dedicated_savegames_paths_from_exe(exe_path: str) -> list[Path]:
-    exe_path = str(exe_path).strip()
-    if not exe_path:
+    base = server_root_from_exe(exe_path)
+    if base is None:
         return []
-    p = Path(exe_path)
-    if not p.is_file():
-        return []
-    base = p.parent
     return [
         base / "RSDragonwilds" / "Saved" / "SaveGames",
         base / "Saved" / "SaveGames",
+    ]
+
+
+def dedicated_log_paths_from_exe(exe_path: str) -> list[Path]:
+    base = server_root_from_exe(exe_path)
+    if base is None:
+        return []
+    return [
+        base / "RSDragonwilds" / "Saved" / "Logs" / "RSDragonwilds.log",
+        base / "Saved" / "Logs" / "RSDragonwilds.log",
     ]
 
 
@@ -410,9 +440,9 @@ def prune_savegame_backups(destination_root: Path, retention_days: int, log,
     return deleted
 
 
-def write_config(cfg: dict, log) -> None:
+def write_config(cfg: dict, log) -> bool:
+    """Write DedicatedServer.ini. Returns False if there was nowhere to write it yet."""
     log("Writing DedicatedServer.ini...")
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     SAVEGAMES_DIR.mkdir(parents=True, exist_ok=True)
 
     owner_id = str(cfg.get("owner_id", "")).strip()
@@ -444,15 +474,26 @@ def write_config(cfg: dict, log) -> None:
         Port={port}
     """)
 
-    # Primary config location (LocalAppData)
-    CONFIG_FILE.write_text(content, encoding="utf-8")
-    log(f"Config written to {CONFIG_FILE}", "OK")
+    written = False
 
-    # Secondary locations under the server install tree, if applicable.
+    # Per-user config location (LocalAppData); not used on Linux.
+    if CONFIG_FILE is not None:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_FILE.write_text(content, encoding="utf-8")
+        log(f"Config written to {CONFIG_FILE}", "OK")
+        written = True
+
+    # Locations under the server install tree, if applicable.
     for exe_cfg_path in _dedicated_config_paths_from_exe(cfg.get("server_exe", "")):
         exe_cfg_path.parent.mkdir(parents=True, exist_ok=True)
         exe_cfg_path.write_text(content, encoding="utf-8")
-        log(f"Config also written to {exe_cfg_path}", "OK")
+        log(f"Config {'also ' if written else ''}written to {exe_cfg_path}", "OK")
+        written = True
+
+    if not written:
+        log("Server files not found -- DedicatedServer.ini will be written once the "
+            "server is installed or selected.", "WARN")
+    return written
 
 
 def read_config(config_path: Path = None) -> dict:
@@ -468,7 +509,7 @@ def read_config(config_path: Path = None) -> dict:
     }
 
     target = Path(config_path) if config_path else CONFIG_FILE
-    if not target.exists():
+    if target is None or not target.exists():
         return defaults
 
     for line in target.read_text(encoding="utf-8", errors="ignore").splitlines():

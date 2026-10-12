@@ -12,8 +12,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from . import installer
+
 SERVER_PROCESS_PREFIX = "rsdragonwildsserver"
-LOG_FILE = "RSDragonwilds.log"
 JOIN_RE = re.compile(r"Join succeeded:\s*(.+)")
 LEAVE_RE = re.compile(r"Player Removed from session \[[^\]]+\]-\[(.+)\]")
 
@@ -69,12 +70,13 @@ class ServerMonitor:
                 executable = Path(proc.info.get("exe") or "").name.lower()
                 if (SERVER_PROCESS_PREFIX in process_name
                         or SERVER_PROCESS_PREFIX in executable):
+                    server_path = self._server_binary_path(proc)
                     if not self.is_online:
                         self.start_time = datetime.fromtimestamp(proc.info["create_time"])
-                        self.exe_path   = proc.info.get("exe", "")
+                        self.exe_path   = server_path
                         self._reset_player_tracking()
-                    elif self.exe_path != proc.info.get("exe", ""):
-                        self.exe_path = proc.info.get("exe", "")
+                    elif self.exe_path != server_path:
+                        self.exe_path = server_path
                         self._reset_player_tracking()
                     self.is_online = True
                     self.pid       = proc.info["pid"]
@@ -98,14 +100,24 @@ class ServerMonitor:
         self._log_path = None
         self._log_offset = 0
 
+    @staticmethod
+    def _server_binary_path(proc) -> str:
+        """Path of the server binary, or "" if the process does not reveal it."""
+        exe = proc.info.get("exe") or ""
+        if SERVER_PROCESS_PREFIX in Path(exe).name.lower():
+            return exe
+        # Through an emulator or loader (e.g. FEX on ARM) the process exe is the
+        # emulator and the server binary is the first argument.
+        try:
+            argv = proc.cmdline()
+        except psutil.Error:
+            return ""
+        if argv and SERVER_PROCESS_PREFIX in Path(argv[0]).name.lower() and Path(argv[0]).is_file():
+            return argv[0]
+        return ""
+
     def _candidate_log_paths(self) -> list[Path]:
-        if not self.exe_path:
-            return []
-        base = Path(self.exe_path).parent
-        return [
-            base / "RSDragonwilds" / "Saved" / "Logs" / LOG_FILE,
-            base / "Saved" / "Logs" / LOG_FILE,
-        ]
+        return installer.dedicated_log_paths_from_exe(self.exe_path)
 
     def _update_player_count(self):
         if not self._log_path:
